@@ -12,10 +12,12 @@ let jobBlocked = false;
 let activeJob = "";
 let countTimer = null;
 let selectedImage = "";
-let galleryImages = [];
 let galleryItems = [];
 let captureSlideIndex = 0;
-let captureRenderToken = 0;
+let captureSelectedImage = "";
+let captureFolders = {};
+let captureModalRevision = 0;
+let galleryRevision = 0;
 
 function $(id) {
   return document.getElementById(id);
@@ -73,12 +75,11 @@ function updateCameraFrame(base64Data) {
 }
 
 function setButtons() {
-  const sessionActive = ["white", "white_stopping", "awaiting_uv", "uv", "uv_stopping"].includes(captureStage);
+  const sessionActive = ["capturing", "stopping"].includes(captureStage);
   $("btnLiveStart").disabled = liveMode || sessionActive || captureRequest;
   $("btnLiveStop").disabled = !liveMode || captureRequest;
   $("btnStartTraining").disabled = liveMode || sessionActive || captureRequest;
-  $("btnStopTraining").disabled = captureRequest || !["white", "uv"].includes(captureStage);
-  $("btnCollectUV").disabled = captureRequest || captureStage !== "awaiting_uv";
+  $("btnStopTraining").disabled = captureRequest || captureStage !== "capturing";
   $("btnJobSave").disabled = captureRequest || jobLoading || jobBlocked;
   $("jobSelect").disabled = captureRequest;
   $("jobIdInput").disabled = captureRequest;
@@ -135,8 +136,8 @@ async function loadJobFolders(job) {
   const jobInput = $("jobIdInput");
   jobInput.value = job;
   jobInput.readOnly = Boolean(job);
-  $("whiteFieldName").value = job ? "" : whiteFieldPrefix;
-  $("uvLightName").value = job ? "" : uvLightPrefix;
+  $("whiteFieldName").value = "";
+  $("uvLightName").value = "";
   $("jobError").hidden = true;
   $("jobFolderHint").hidden = true;
   jobBlocked = false;
@@ -155,6 +156,7 @@ async function loadJobFolders(job) {
   jobLoading = false;
   jobBlocked = !data.ok;
   if (data.ok) {
+    refreshCounts(job, revision);
     $("whiteFieldName").value = data.white_name;
     $("uvLightName").value = data.uv_name;
     if (data.message) {
@@ -175,13 +177,15 @@ function setSelectedJob(jobId) {
   }
 }
 
-async function refreshCounts(jobId = currentJob()) {
+async function refreshCounts(jobId = currentJob(), lookupRevision = jobLookupRevision) {
   if (captureRequest || !bridge) return;
   const revision = captureRevision;
   try {
     const raw = await callBridge("getTrainingCaptureStatus", jobId);
     const data = JSON.parse(raw || "{}");
-    if (data.ok && revision === captureRevision && !captureRequest) applyCaptureStatus(data);
+    if (data.ok && revision === captureRevision && lookupRevision === jobLookupRevision && !captureRequest) {
+      applyCaptureStatus(data);
+    }
   } catch (error) {
     console.error("Count refresh failed:", error);
   }
@@ -189,41 +193,51 @@ async function refreshCounts(jobId = currentJob()) {
 
 function applyCaptureStatus(data) {
   const previous = captureStage;
+  const previousJob = currentJob();
   captureStage = data.stage;
   if (data.job_id) setSelectedJob(data.job_id);
-  $("whiteCount").textContent = data.white_count;
-  $("uvCount").textContent = data.uv_count;
-  $("folderCount").textContent = data.folder_count;
+  const counts = [
+    ["whiteCount", data.white_count],
+    ["uvCount", data.uv_count],
+    ["folderCount", data.white_count + data.uv_count],
+  ];
+  const countsChanged = counts.some(([id, count]) => $(id).textContent !== String(count));
+  counts.forEach(([id, count]) => { $(id).textContent = count; });
+  const phases = {
+    initializing: "Initializing capture?",
+    waiting: "Waiting for the next object?",
+    white: "Capturing White Field image?",
+    uv: "Capturing UV Light image?",
+    paired: "Image pair captured successfully.",
+    clear: "Waiting for the next object?",
+  };
   const messages = {
     idle: "Ready to capture.",
-    white: "Collecting White Field images…",
-    white_stopping: "Saving the last White Field image…",
-    awaiting_uv: "Switch the lighting, then click Collect UV Images.",
-    uv: "Collecting UV Light images…",
-    uv_stopping: "Saving the last UV Light image…",
-    completed: `Job ${data.job_id} completed. White Field: ${data.white_count}. UV Light: ${data.uv_count}.`,
-    failed: data.message || "Capture failed.",
+    capturing: phases[data.phase] || phases.initializing,
+    stopping: data.phase === "closing" ? "Turning off the lights?" : "Finishing the current image pair?",
+    completed: `Capture stopped successfully. Job ${data.job_id}. White Field: ${data.white_count}. UV Light: ${data.uv_count}.`,
+    failed: data.message || "Capture failed. Check the camera and light connection.",
   };
-  if ($("captureStatus").textContent !== messages[captureStage]) {
-    $("captureStatus").textContent = messages[captureStage];
-  }
+  $("captureStatus").textContent = messages[captureStage];
   setButtons();
 
   window.clearTimeout(countTimer);
-  if (["white", "white_stopping", "uv", "uv_stopping"].includes(captureStage)) {
-    countTimer = window.setTimeout(() => refreshCounts(), 500);
+  if (["capturing", "stopping"].includes(captureStage)) {
+    countTimer = window.setTimeout(() => refreshCounts(), 300);
   }
-  if (captureStage !== previous && ["awaiting_uv", "completed", "failed"].includes(captureStage)) {
+  const ended = ["capturing", "stopping"].includes(previous)
+    && ["completed", "failed"].includes(captureStage);
+  if (ended) {
+    $("previewStage").classList.remove("active");
+    $("cameraFeed").removeAttribute("src");
+  }
+  if (countsChanged || previousJob !== currentJob() || ended || previous !== captureStage) {
     const galleryReady = refreshGallery();
-    if (captureStage !== "awaiting_uv") {
-      $("previewStage").classList.remove("active");
-      $("cameraFeed").removeAttribute("src");
-      if (captureStage === "completed" && ["uv", "uv_stopping"].includes(previous)) {
-        const revision = captureRevision;
-        galleryReady.then(() => {
-          if (revision === captureRevision) openCaptureModal();
-        });
-      }
+    if (ended && captureStage === "completed") {
+      const revision = captureRevision;
+      galleryReady.then(() => {
+        if (revision === captureRevision && currentJob() === data.job_id) openCaptureModal();
+      });
     }
   }
 }
@@ -264,15 +278,14 @@ function startTraining() {
 
 function normalizeFolderInput(id, prefix) {
   const input = $(id);
-  const name = input.value.trim();
-  if (!name || name.endsWith(".") || /[<>:"/\\|?*\x00-\x1f]/.test(name)
+  const name = input.value;
+  if (!name.trim() || /[ .]$/.test(name) || /[<>:"/\\|?*\x00-\x1f]/.test(name)
     || /^(CON|PRN|AUX|NUL|COM[1-9¹²³]|LPT[1-9¹²³])$/i.test(name.split(".")[0].trimEnd())) {
     input.value = name;
     return null;
   }
 
-  const hasPrefix = name.slice(0, prefix.length).toLowerCase() === prefix.toLowerCase();
-  const suffix = (hasPrefix ? name.slice(prefix.length) : name).replace(/^[_\s]+/, "");
+  const suffix = name.trim().replace(new RegExp(`^(?:${prefix}[_\\s]*)+`, "i"), "");
   input.value = suffix ? prefix + "_" + suffix : prefix;
   return input.value;
 }
@@ -282,8 +295,8 @@ async function confirmJobAndStartTraining() {
   const typedJob = String($("jobIdInput").value || "").trim();
   const selectedJob = String($("jobSelect").value || "").trim();
   const job = selectedJob || typedJob;
-  if (!job) {
-    showJobError("Choose or enter a Job ID.");
+  if (!/^[\p{L}\p{N}-][\p{L}\p{N}_-]*[\p{L}\p{N}-]$|^[\p{L}\p{N}-]$/u.test(job)) {
+    showJobError("Enter a valid Job ID using letters, numbers, hyphens or underscores.");
     if ($("jobSelect").options.length > 1) $("jobSelect").focus();
     else $("jobIdInput").focus();
     return;
@@ -303,7 +316,6 @@ async function confirmJobAndStartTraining() {
   applyCaptureStatus(data);
   ensureJobOption(activeJob);
   closeJobModal();
-  refreshGallery();
 }
 
 function showJobError(message) {
@@ -370,41 +382,83 @@ async function refreshJobs() {
 }
 
 async function refreshGallery(jobId = currentJob()) {
+  const revision = ++galleryRevision;
   const gallery = $("gallery");
-  galleryImages = [];
-  galleryItems = [];
+  const items = jobId ? await fetchTrainingImageItems(jobId) : [];
+  if (revision !== galleryRevision || jobId !== currentJob()) return;
+  const previousSelection = selectedImage;
+  galleryItems = items;
   selectedImage = "";
   $("btnDeleteImage").disabled = true;
-
-  if (!jobId) {
-    gallery.innerHTML = "<p>Select a job to view images.</p>";
-    return;
-  }
-
-  galleryItems = await fetchTrainingImageItems(jobId);
-  galleryImages = galleryItems.map((item) => item.filename);
-
-  if (!galleryImages.length) {
-    gallery.innerHTML = "<p>No images found for this job.</p>";
+  if (!items.length) {
+    gallery.innerHTML = jobId ? "<p>No images found for this job.</p>" : "<p>Select a job to view images.</p>";
     return;
   }
 
   gallery.innerHTML = "";
-  galleryItems.forEach(async (item, index) => {
-    const button = document.createElement("button");
-    button.className = "thumb";
-    button.type = "button";
-    button.innerHTML = `<img alt="">`;
-    button.addEventListener("click", () => selectImage(button, item.filename));
-    gallery.appendChild(button);
-
-    if (index === 0) {
-      selectImage(button, item.filename);
+  let firstButton;
+  let firstFilename;
+  for (const slots of groupTrainingImages(items)) {
+    const row = document.createElement("div");
+    row.className = "image-pair";
+    for (const item of slots) {
+      if (!item) {
+        row.appendChild(document.createElement("span"));
+        continue;
+      }
+      const button = document.createElement("button");
+      button.className = "thumb";
+      button.type = "button";
+      const label = item.light === "white" ? "White Field" : item.light === "uv" ? "UV Light" : "";
+      const img = document.createElement("img");
+      img.loading = "lazy";
+      loadTrainingPreview(img, jobId, item);
+      button.appendChild(img);
+      if (label) {
+        const caption = document.createElement("span");
+        caption.textContent = label;
+        button.appendChild(caption);
+      }
+      button.addEventListener("click", () => selectImage(button, item.filename));
+      row.appendChild(button);
+      if (!firstButton) {
+        firstButton = button;
+        firstFilename = item.filename;
+      }
+      if (item.filename === previousSelection) selectImage(button, item.filename);
     }
+    gallery.appendChild(row);
+  }
+  if (!selectedImage && firstButton) selectImage(firstButton, firstFilename);
+}
 
-    const img = button.querySelector("img");
-    img.src = item.url || await imageDataFor(jobId, item.filename);
-  });
+function groupTrainingImages(items) {
+  const groups = new Map();
+  for (const item of items) {
+    const basename = item.filename.split("/").pop();
+    const key = item.light ? basename : item.filename;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(item);
+  }
+  return Array.from(groups.values(), (group) => group.some((item) => item.light)
+    ? ["white", "uv"].map((light) => group.find((item) => item.light === light))
+    : group);
+}
+
+function loadTrainingPreview(img, jobId, item) {
+  const label = item.light === "white" ? "White Field" : item.light === "uv" ? "UV Light" : "";
+  img.alt = label ? `${label} ${item.filename.split("/").pop()}` : item.filename;
+  const fallback = async () => {
+    img.onerror = null;
+    const src = await imageDataFor(jobId, item.filename);
+    if (src) img.src = src;
+  };
+  if (item.url) {
+    img.onerror = fallback;
+    img.src = item.url;
+  } else {
+    fallback();
+  }
 }
 
 async function fetchTrainingImageItems(jobId) {
@@ -417,7 +471,8 @@ async function fetchTrainingImageItems(jobId) {
       if (data.ok && Array.isArray(data.items)) {
         return data.items
           .map((item) => ({
-            filename: String(item.filename || "").trim(),
+            filename: String(item.filename || ""),
+            light: item.light || "",
             url: String(item.url || "").trim(),
           }))
           .filter((item) => item.filename);
@@ -466,112 +521,109 @@ async function imageDataFor(jobId, filename) {
   }
 }
 
-async function imageSrcFor(jobId, filename) {
-  const item = galleryItems.find((entry) => entry.filename === filename);
-  if (item && item.url) return item.url;
-
-  if (bridge && bridge.getTrainingImageUrl) {
-    try {
-      const raw = await Promise.race([
-        callBridge("getTrainingImageUrl", jobId, filename),
-        new Promise((resolve) => window.setTimeout(() => resolve(null), 4000)),
-      ]);
-      const data = JSON.parse(raw || "{}");
-      if (data.ok && data.url) return data.url;
-    } catch (error) {
-      console.error("Training image URL failed:", error);
-    }
-  }
-
-  return imageDataFor(jobId, filename);
-}
-
 function closeCaptureModal() {
+  captureModalRevision += 1;
   const modal = $("captureModal");
   modal.classList.remove("open");
   modal.setAttribute("aria-hidden", "true");
 }
 
-async function renderCaptureSlide(jobId = currentJob()) {
-  const renderToken = ++captureRenderToken;
-  const gallery = $("captureGallery");
-  const counter = $("captureCounter");
-  const prev = $("btnCapturePrev");
-  const next = $("btnCaptureNext");
-  const deleteButton = $("btnCaptureDeleteImage");
-  const safeJob = String(jobId || "").trim();
-  const total = galleryImages.length;
+function captureSlides() {
+  const items = galleryItems.map((item) => {
+    const separator = item.filename.lastIndexOf("/");
+    const folder = separator < 0 ? "" : item.filename.slice(0, separator);
+    const light = folder && Object.keys(captureFolders).find((kind) => captureFolders[kind] === folder);
+    return light ? { ...item, light } : item;
+  });
+  return groupTrainingImages(items.filter((item) => item.light === "white" || item.light === "uv"));
+}
 
-  captureSlideIndex = Math.max(0, Math.min(captureSlideIndex, Math.max(0, total - 1)));
-  counter.textContent = `${total ? captureSlideIndex + 1 : 0} / ${total}`;
-  prev.disabled = total <= 1 || captureSlideIndex <= 0;
-  next.disabled = total <= 1 || captureSlideIndex >= total - 1;
-  deleteButton.disabled = !safeJob || !total;
-
-  if (!safeJob || !total) {
-    gallery.innerHTML = "<p>No images found for this job.</p>";
-    return;
+function renderCaptureSlide(jobId = currentJob()) {
+  const slides = captureSlides();
+  const total = slides.length;
+  captureSlideIndex = Math.max(0, Math.min(captureSlideIndex, total - 1));
+  $("captureCounter").textContent = `Pair ${total ? captureSlideIndex + 1 : 0} / ${total}`;
+  $("btnCapturePrev").disabled = captureSlideIndex <= 0;
+  $("btnCaptureNext").disabled = captureSlideIndex >= total - 1;
+  $("btnCaptureDeleteImage").disabled = !jobId || !total;
+  const slide = slides[captureSlideIndex] || [];
+  if (!slide.some((item) => item && item.filename === captureSelectedImage)) {
+    captureSelectedImage = slide.find(Boolean)?.filename || "";
   }
 
-  const hasImage = Boolean(gallery.querySelector(".capture-image"));
-  if (!hasImage) {
-    gallery.innerHTML = "<p>Loading image...</p>";
-  }
-
-  const data = await imageSrcFor(safeJob, galleryImages[captureSlideIndex]);
-  if (!data) {
-    if (!hasImage) {
-      gallery.innerHTML = "<p>Unable to load image.</p>";
+  for (const [index, light, panel, label] of [
+    [0, "white", "captureWhite", "White Field"],
+    [1, "uv", "captureUV", "UV Light"],
+  ]) {
+    const item = slide[index];
+    const folderPath = galleryItems.find((entry) => entry.light === light)?.filename;
+    $(panel + "Folder").textContent = captureFolders[light]
+      || (folderPath ? folderPath.slice(0, folderPath.lastIndexOf("/")) : "") || "Folder unavailable";
+    $(panel + "Filename").textContent = item ? item.filename.split("/").pop() : "—";
+    const viewport = $(panel + "Image");
+    viewport.innerHTML = "";
+    if (!item) {
+      const placeholder = document.createElement("p");
+      placeholder.textContent = `No ${label} image for this ${total ? "pair" : "job"}.`;
+      viewport.appendChild(placeholder);
+      continue;
     }
-    return;
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "capture-image-option";
+    button.setAttribute("aria-pressed", String(item.filename === captureSelectedImage));
+    const img = document.createElement("img");
+    img.className = "capture-image";
+    loadTrainingPreview(img, jobId, item);
+    button.appendChild(img);
+    button.addEventListener("click", () => {
+      captureSelectedImage = item.filename;
+      $("captureModal").querySelectorAll(".capture-image-option").forEach((option) => {
+        option.setAttribute("aria-pressed", String(option === button));
+      });
+    });
+    viewport.appendChild(button);
   }
-
-  if (renderToken !== captureRenderToken) return;
-
-  const img = document.createElement("img");
-  img.className = "capture-image";
-  img.alt = "";
-  img.onerror = () => {
-    if (renderToken !== captureRenderToken) return;
-    gallery.innerHTML = "<p>Unable to load image.</p>";
-  };
-  img.src = data;
-  gallery.innerHTML = "";
-  gallery.appendChild(img);
 }
 
 async function openCaptureModal(jobId = currentJob()) {
+  const revision = ++captureModalRevision;
   const modal = $("captureModal");
-  const gallery = $("captureGallery");
-  const trainButton = $("btnCaptureTrainModel");
-  const safeJob = String(jobId || "").trim();
-
-  trainButton.disabled = !safeJob;
-  gallery.innerHTML = "<p>Loading images...</p>";
+  $("btnCaptureTrainModel").disabled = !jobId;
   captureSlideIndex = 0;
+  captureSelectedImage = "";
+  captureFolders = {};
   modal.classList.add("open");
   modal.setAttribute("aria-hidden", "false");
+  renderCaptureSlide(jobId);
+  if (!jobId) return;
 
-  galleryItems = safeJob ? await fetchTrainingImageItems(safeJob) : [];
-  galleryImages = galleryItems.map((item) => item.filename);
-  await renderCaptureSlide(safeJob);
+  try {
+    const data = JSON.parse(await callBridge("getTrainingJobFolders", jobId) || "{}");
+    if (data.ok && revision === captureModalRevision && jobId === currentJob()) {
+      captureFolders = { white: data.white_name, uv: data.uv_name };
+      renderCaptureSlide(jobId);
+    }
+  } catch (error) {
+    console.error("Collected image folder lookup failed:", error);
+  }
 }
 
-async function showPreviousCaptureImage() {
+function showPreviousCaptureImage() {
   if (captureSlideIndex <= 0) return;
   captureSlideIndex -= 1;
-  await renderCaptureSlide(currentJob());
+  renderCaptureSlide();
 }
 
-async function showNextCaptureImage() {
-  if (captureSlideIndex >= galleryImages.length - 1) return;
+function showNextCaptureImage() {
+  if (captureSlideIndex >= captureSlides().length - 1) return;
   captureSlideIndex += 1;
-  await renderCaptureSlide(currentJob());
+  renderCaptureSlide();
 }
 
 async function deleteCurrentCaptureImage() {
   const job = currentJob();
-  const filename = galleryImages[captureSlideIndex];
+  const filename = captureSelectedImage;
   if (!job || !filename) return;
 
   const b = await initBridge();
@@ -584,15 +636,9 @@ async function deleteCurrentCaptureImage() {
     return;
   }
 
-  galleryImages.splice(captureSlideIndex, 1);
-  galleryItems.splice(captureSlideIndex, 1);
-  if (captureSlideIndex >= galleryImages.length) {
-    captureSlideIndex = Math.max(0, galleryImages.length - 1);
-  }
-
-  selectedImage = "";
-  await renderCaptureSlide(job);
+  captureSelectedImage = "";
   await refreshGallery(job);
+  renderCaptureSlide(job);
   await refreshCounts(job);
   toast(data.message || "Image deleted");
 }
@@ -653,14 +699,12 @@ window.addEventListener("load", async () => {
   await initBridge();
   await refreshCounts();
   await refreshJobs();
-  if (activeJob && captureStage !== "completed") await refreshGallery();
   setButtons();
 
   $("btnLiveStart").addEventListener("click", startLive);
   $("btnLiveStop").addEventListener("click", stopLive);
   $("btnStartTraining").addEventListener("click", startTraining);
   $("btnStopTraining").addEventListener("click", () => changeCaptureStage("stopTraining"));
-  $("btnCollectUV").addEventListener("click", () => changeCaptureStage("startTrainingUV"));
   $("btnDeleteImage").addEventListener("click", deleteSelectedImage);
   $("btnCaptureTrainModel").addEventListener("click", trainModel);
   $("btnCaptureModalClose").addEventListener("click", closeCaptureModal);

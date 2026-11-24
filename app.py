@@ -73,6 +73,7 @@ else:
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
+        self._shutting_down = False
         self.controller_window = None
         self.setting_window = None
         self.report_window = None
@@ -91,6 +92,7 @@ class MainWindow(QMainWindow):
         
         # Load local HTML
         self.view.load(QUrl.fromLocalFile(str(INDEX_HTML.resolve())))
+        QApplication.instance().aboutToQuit.connect(self.shutdown)
 
     def load_main_page(self, html_path):
         self.view.load(QUrl.fromLocalFile(str(html_path.resolve())))
@@ -133,28 +135,18 @@ class MainWindow(QMainWindow):
         
 
     def shutdown(self):
-        print("[MainWindow] shutdown called")
+        if self._shutting_down:
+            return
+        self._shutting_down = True
+
         try:
-            if hasattr(self, "bridge") and self.bridge is not None:
-                # Stop live loop + process thread
-                try:
-                    self.bridge.stopCamera()
-                except Exception as e:
-                    print("stopCamera on controller close error:", e)
-
-                # Turn OFF all Modbus outputs
-                try:
-                    self.bridge.all_channels_off()
-                except Exception as e:
-                    print("all_channels_off error on controller close:", e)
-
-                # Finally close Basler camera
-                try:
-                    self.bridge._close_camera()
-                except Exception as e:
-                    print("_close_camera on controller close error:", e)
-        except Exception as e:
-            print("Controller close handler error:", e)
+            self.view.page().setWebChannel(None)
+            if self.report_window is not None:
+                self.report_view.page().setWebChannel(None)
+                self.report_window.close()
+                self.report_bridge.shutdown()
+        finally:
+            self.bridge.shutdown(close_plc=True)
        
 
     def closeEvent(self, event):
@@ -171,9 +163,7 @@ if __name__ == "__main__":
         app = QApplication(sys.argv)
         window = MainWindow()
         window.show()
-        ret = app.exec_()
-        window.shutdown()
-        sys.exit(ret)
+        sys.exit(app.exec_())
     else:
         window = MainWindow()
         window.show()

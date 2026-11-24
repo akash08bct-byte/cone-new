@@ -21,13 +21,15 @@ import sqlite3
 from contextlib import closing
 from concurrent.futures import ThreadPoolExecutor
 from uuid import uuid4
-from classes.main import Process
-from classes.compare_tips import detect_thread_circle
+from classes.main import Process, WH_STABILIZE, UV_STABILIZE_TOP
 import json
 from classes.Plc_connection import *
 from pathlib import Path
 from classes.zoom import ImageViewerDialog
-from paths import DB_PATH, GOOD_TIP, SETTINGS_JSON, APP_DIR, PREDICTION, TRAINING_IMAGES_DIR
+from paths import (
+    DB_PATH, GOOD_TIP, SETTINGS_JSON, APP_DIR, PREDICTION,
+    LAPTOP_TRAINING_IMAGES_DIR, TRAINING_IMAGES_DIR, TRAINING_PLC_ENABLED,
+)
 import numpy as np
 from classes.database import execute,fetch_all,fetch_one,get_conn
 
@@ -99,19 +101,28 @@ class Bridge(QObject):
     def __init__(self, app_ref=None, tips_dir=GOOD_TIP):
         super().__init__()
         self.app_ref = app_ref
+        self._shutting_down = False
 
         #modified by Gokul
         self._active_shift_id = None
         self.training_stage = "idle"
+        self.training_plc_enabled = TRAINING_PLC_ENABLED
+        self.training_root = (
+            TRAINING_IMAGES_DIR if self.training_plc_enabled else LAPTOP_TRAINING_IMAGES_DIR
+        ).absolute()
+        self.training_simulated_light = None
         self.current_training_job = ""
         self.training_dirs = {}
-        self.training_counts = {"white": 0, "uv": 0}
         self.training_error = ""
-        self.training_save = None
-        self.training_writer = ThreadPoolExecutor(max_workers=1)
+        self.training_phase = "initializing"
+        self.training_task = None
+        self.training_io = ThreadPoolExecutor(max_workers=1)
+        self.training_pair = None
+        self.training_number = 1
+        self.training_ready_at = 0
+        self.training_next_poll = 0
+        self.training_pair_saved_at = None
         self.training_last_frame = 0
-        self.last_training_capture_time = 0
-        self.training_capture_interval = 0.5
 
         # Basler camera objects
         self.camera = None
@@ -134,7 +145,6 @@ class Bridge(QObject):
         self.timer.timeout.connect(self._grab_and_send_frame)
         self._shift_report_sent = set()
         self.is_running = False
-        self._last_cone_image_time = 0.0
         self.process = Process(
             set_exposure_cb=self._set_exposure_from_process,
             capture_frame_cb=self._capture_frame_for_process,
@@ -166,6 +176,8 @@ class Bridge(QObject):
             self.end_dt = end_dt
 
         def run(self):
+            if self.bridge._shutting_down:
+                return
             try:
                 # 1) Generate PDF
                 pdf_url = self.bridge.reports_export_pdf(
@@ -192,6 +204,8 @@ class Bridge(QObject):
                     final_pdf = pdf_path
 
                 # 3) Send mail
+                if self.bridge._shutting_down:
+                    return
                 from classes.mailer import send_shift_mail
                 send_shift_mail(self.name, self.end_dt, final_pdf)
                 print("✅ Shift mail sent:", self.name)
@@ -229,20 +243,44 @@ class Bridge(QObject):
         Turn OFF all outputs on B1 and B2 when UI/Controller closes.
         """
         try:
-            conveyor_off()
-            unlock_cone()
-            piston_up_stop()
-            piston_down_stop()
-            piston_rotate_stop()
-            uv_light_off()
-            white_light_off()
-            green_light_off()
-            red_light_off()
-            buzzer_off()
-
-            print("[Bridge] All PLC outputs OFF")
+            if not ensure_connected():
+                return
+            outputs = (
+                uv_light_off, white_light_off, conveyor_off, unlock_cone,
+                piston_up_stop, piston_down_stop, piston_rotate_stop,
+                green_light_off, red_light_off, buzzer_off,
+            )
+            for turn_off in outputs:
+                if not client.is_socket_open():
+                    break
+                turn_off()
         except Exception as e:
             print("all_channels_off error:", e)
+
+    def shutdown(self, close_plc=False):
+        if self._shutting_down:
+            return
+        self._shutting_down = True
+        self.timer.stop()
+        self.shift_timer.stop()
+
+        worker = self.process_thread
+        if worker is not None and worker.isRunning():
+            worker.requestInterruption()
+            self.process.running_loop = False
+            worker.wait()
+
+        try:
+            self.stopCamera()
+            self.close_defect_popup()
+        finally:
+            self.training_io.shutdown(wait=True)
+            if close_plc:
+                try:
+                    if self.training_plc_enabled or worker is not None or client.is_socket_open():
+                        self.all_channels_off()
+                finally:
+                    client.close()
 
     def _encode_bgr_to_base64(self, bgr_img):
         """Encode cv2 BGR image → JPEG base64 string."""
@@ -404,7 +442,7 @@ class Bridge(QObject):
                 valid_frame = None
                 for _ in range(10):
                     ret, frame = self.camera.read()
-                    if ret and frame is not None:
+                    if ret and frame is not None and frame.size:
                         valid_frame = frame
 
                 if valid_frame is None:
@@ -556,12 +594,9 @@ class Bridge(QObject):
             print("❌ Camera close error:", e)
     # --------- GRAB + SEND ---------
     def _grab_and_send_frame(self):
-        self._finish_training_save()
-        if (self.training_stage in ("white", "uv")
-                and time.monotonic() - self.training_last_frame > 5):
-            self.training_error = "Camera stopped delivering frames."
-            self.training_stage += "_stopping"
-            self._finish_training_save()
+        if self._shutting_down:
+            return
+        self._advance_training()
         if self.camera is None:
             return
 
@@ -572,11 +607,14 @@ class Bridge(QObject):
         try:
             ret, frame = self.camera.read()
 
-            if not ret or frame is None:
+            if not ret or frame is None or not frame.size:
                 print("⚠️ OpenCV frame grabbing failed")
                 return
 
             self.latest_frame = frame.copy()
+            self._advance_training(frame)
+            if self.camera is None:
+                return
 
             ok, buffer = cv2.imencode(
                 ".jpg",
@@ -591,22 +629,6 @@ class Bridge(QObject):
             b64 = base64.b64encode(buffer.tobytes()).decode("ascii")
 
             self.frame_signal.emit(b64)
-            self._capture_training_frame(frame)
-            if self.training_stage in ("white", "white_stopping", "awaiting_uv", "uv", "uv_stopping"):
-                return
-
-            # Publish the processed thread/ring views while the Home live view
-            # is running.  The inspection worker also publishes these images,
-            # but it waits for PLC signals and is not active for a camera preview.
-            now = time.monotonic()
-            if now - self._last_cone_image_time >= 0.2:
-                self._last_cone_image_time = now
-                try:
-                    mask_full, ring_image, orad = detect_thread_circle(frame)
-                    thread_image = cv2.bitwise_and(frame, frame, mask=mask_full)
-                    self.send_cone_images(thread_image, ring_image, orad)
-                except Exception as e:
-                    print("Live cone image processing error:", e)
 
         except Exception as e:
             print("❌ Frame processing error:", e)
@@ -622,7 +644,7 @@ class Bridge(QObject):
         safe_job = self._safe_training_job(job_id)
         if not safe_job:
             return None
-        return TRAINING_IMAGES_DIR / safe_job
+        return self.training_root / safe_job
 
     def _training_image_names(self, job_id):
         job_dir = self._training_job_dir(job_id)
@@ -633,7 +655,7 @@ class Bridge(QObject):
         try:
             entries = list(job_dir.iterdir())
             for folder in list(entries):
-                if folder.is_dir() and folder.resolve() == TRAINING_IMAGES_DIR.resolve() / job_dir.name / folder.name:
+                if folder.is_dir() and folder.resolve() == self.training_root.resolve() / job_dir.name / folder.name:
                     entries.extend(folder.iterdir())
             return sorted(
                 item.relative_to(job_dir).as_posix() for item in entries
@@ -650,7 +672,7 @@ class Bridge(QObject):
         if job_dir is None or len(parts) > 2 or not all(map(self._valid_training_folder, parts)):
             return None
         path = job_dir.joinpath(*parts)
-        if path.is_file() and path.resolve() == TRAINING_IMAGES_DIR.resolve().joinpath(job_dir.name, *parts):
+        if path.is_file() and path.resolve() == self.training_root.resolve().joinpath(job_dir.name, *parts):
             return path
         return None
 
@@ -665,11 +687,9 @@ class Bridge(QObject):
         )
 
     def _normalize_training_folder(self, name, prefix):
-        name = name.strip()
         if not self._valid_training_folder(name):
             raise ValueError(f"Enter a valid folder name for {prefix}.")
-        suffix = name[len(prefix):] if name[:len(prefix)].lower() == prefix.lower() else name
-        suffix = re.sub(r"^[_\s]+", "", suffix)
+        suffix = re.sub(rf"^(?:{prefix}[_\s]*)+", "", name.strip(), flags=re.IGNORECASE)
         return f"{prefix}_{suffix}" if suffix else prefix
 
     @staticmethod
@@ -678,50 +698,143 @@ class Bridge(QObject):
         if not ok:
             raise OSError("JPEG encoding failed.")
         temporary = path.with_suffix(".tmp")
+        stream = temporary.open("xb")
         try:
-            temporary.write_bytes(jpeg.tobytes())
-            # The unique file name belongs to this capture. Publish only complete JPEGs.
+            with stream:
+                stream.write(jpeg.tobytes())
+            if path.exists():
+                raise FileExistsError(path)
             temporary.rename(path)
         finally:
             temporary.unlink(missing_ok=True)
 
-    def _capture_training_frame(self, frame):
-        phase = self.training_stage
-        if phase not in ("white", "uv"):
+    def _set_training_light(self, light=None):
+        if not self.training_plc_enabled:
+            self.training_simulated_light = light
             return
+        white = ("White Light", WHITE_LIGHT_ADDR, int(light == "white"))
+        uv = ("UV Light", UV_LIGHT_ADDR, int(light == "uv"))
+        commands = (white, uv) if light == "uv" else (uv, white)
+        failures = []
+        for name, address, value in commands:
+            if read_register(address) == value or write_register(address, value):
+                continue
+            failures.append(f"{name} {'ON' if value else 'OFF'} (register {address})")
+            if light is not None:
+                break
+        if failures:
+            raise OSError(f"PLC {PLC_IP}:{PLC_PORT} could not set {', '.join(failures)}.")
 
-        now = time.monotonic()
-        self.training_last_frame = now
-        if self.training_save is not None or now - self.last_training_capture_time < self.training_capture_interval:
-            return
+    def _discard_training_white(self, pair):
+        if pair and not pair[1].exists():
+            pair[0].unlink(missing_ok=True)
 
-        self.last_training_capture_time = now
-        filename = time.strftime("%Y%m%d_%H%M%S") + f"_{uuid4().hex}.jpg"
-        self.training_save = self.training_writer.submit(
-            self._write_training_image, self.training_dirs[phase] / filename, frame.copy()
-        )
+    def _close_training_cycle(self, pair):
+        try:
+            self._set_training_light()
+        finally:
+            self._discard_training_white(pair)
+        return "closed"
 
-    def _finish_training_save(self):
-        phase = self.training_stage.split("_")[0]
-        if self.training_save is not None:
-            if not self.training_save.done():
-                return
+    def _training_object_present(self):
+        if not self.training_plc_enabled:
+            return True
+        emergency = read_register(EMERGENCY_ADDR)
+        if emergency == 1:
+            raise OSError("Emergency stop interrupted training capture.")
+        if emergency != 0:
+            raise OSError(f"PLC {PLC_IP}:{PLC_PORT} could not read emergency register {EMERGENCY_ADDR}.")
+        present = read_register(SENSOR2_ARRIVAL)
+        if present not in (0, 1):
+            raise OSError(f"PLC {PLC_IP}:{PLC_PORT} could not read arrival register {SENSOR2_ARRIVAL}.")
+        return present == 1
+
+    def _training_step(self, phase, frame, pair):
+        if phase == "initializing":
+            self._set_training_light()
+            return "waiting"
+
+        if phase == "paired" and not self.training_plc_enabled:
+            return "waiting"
+
+        if not self._training_object_present():
+            if phase in ("white", "uv"):
+                self._close_training_cycle(pair if phase == "uv" else None)
+                return "discarded"
+            return "waiting"
+        if phase == "waiting":
+            if any(path.exists() for path in pair):
+                raise FileExistsError(f"Training image number already exists: {pair[0].name}")
+            self._set_training_light("white")
+            return "white"
+        if phase == "white" and frame is not None:
+            self._write_training_image(pair[0], frame)
             try:
-                self.training_save.result()
-                self.training_counts[phase] += 1
-            except Exception as error:
-                self.training_error = f"Unable to save training image: {error}"
-                self.training_stage = f"{phase}_stopping"
-            finally:
-                self.training_save = None
+                if not self._training_object_present():
+                    self._close_training_cycle(pair)
+                    return "discarded"
+                self._set_training_light("uv")
+            except OSError:
+                self._discard_training_white(pair)
+                raise
+            return "uv"
+        if phase == "uv" and frame is not None:
+            self._write_training_image(pair[1], frame)
+            self._set_training_light()
+            return "paired"
+        return "clear" if phase == "paired" else phase
 
-        if self.training_stage in ("white_stopping", "uv_stopping"):
-            if self.training_error:
-                self.training_stage = "failed"
-            else:
-                self.training_stage = "awaiting_uv" if phase == "white" else "completed"
-            if self.training_stage != "awaiting_uv":
+    def _advance_training(self, frame=None):
+        if self.training_stage not in ("capturing", "stopping"):
+            return
+        now = time.monotonic()
+        if frame is not None:
+            self.training_last_frame = now
+        elif now - self.training_last_frame > 5 and not self.training_error:
+            self.training_error = "Camera stopped delivering frames."
+            self.training_stage = "stopping"
+
+        if self.training_task is not None:
+            if not self.training_task.done():
+                return
+            phase = self.training_phase
+            try:
+                result = self.training_task.result()
+            except Exception as error:
+                self.training_error = " ".join(filter(None, (self.training_error, str(error))))
+                # A cleanup failure must finish the session instead of retrying indefinitely.
+                result = "closed" if phase == "closing" else phase
+            self.training_task = None
+            self.training_phase = "waiting" if result == "discarded" else result
+            if result == "closed":
+                self.training_pair = None
+                self.training_stage = "failed" if self.training_error else "completed"
                 self.stopCamera()
+                return
+            if result in ("paired", "discarded"):
+                self.training_pair = None
+            if result != phase:
+                if result == "white":
+                    self.training_ready_at = now + WH_STABILIZE
+                elif result == "uv":
+                    self.training_ready_at = now + UV_STABILIZE_TOP
+                elif result == "paired":
+                    self.training_pair_saved_at = now
+
+        phase = self.training_phase
+        if self.training_error or (self.training_stage == "stopping" and phase not in ("white", "uv")):
+            self.training_stage = "stopping"
+            self.training_phase = "closing"
+            pair = self.training_pair if phase == "uv" else None
+            self.training_task = self.training_io.submit(self._close_training_cycle, pair)
+        elif frame is not None and now >= self.training_next_poll:
+            if phase == "waiting" and self.training_pair is None:
+                filename = f"Image_{self.training_number:04d}.jpg"
+                self.training_pair = tuple(self.training_dirs[kind] / filename for kind in ("white", "uv"))
+                self.training_number += 1
+            snapshot = frame.copy() if phase in ("white", "uv") and now >= self.training_ready_at else None
+            self.training_task = self.training_io.submit(self._training_step, phase, snapshot, self.training_pair)
+            self.training_next_poll = now + 0.1
 
     # --------- SLOTS CALLED FROM JS ---------
     # @pyqtSlot(result=str)
@@ -763,6 +876,8 @@ class Bridge(QObject):
     
     @pyqtSlot(result=str)
     def startCamera(self):
+        if self._shutting_down:
+            return "process"
         try:
             print(
                 "▶️ startCamera() called - "
@@ -809,6 +924,8 @@ class Bridge(QObject):
         
     
     def loops(self):
+        if self._shutting_down:
+            return
         if self.process_thread is None or not self.process_thread.isRunning():
             from classes.worker import ProcessWorker
             self.process_thread = ProcessWorker(self.process)
@@ -820,6 +937,8 @@ class Bridge(QObject):
     
 
     def show_defect_popup(self, image_path: str):
+        if self._shutting_down:
+            return
         p = Path(image_path)
         if not p.is_absolute():
             p = (APP_DIR / p).resolve()
@@ -849,8 +968,23 @@ class Bridge(QObject):
 
     @pyqtSlot()
     def stopCamera(self):
-        """Called from JS: stop only the camera live view."""
-        print("⏹ stopCamera() called from JS")
+        """Stop the camera and release any active training lights."""
+        if self.training_stage in ("capturing", "stopping"):
+            phase = self.training_phase
+            try:
+                if self.training_task is not None:
+                    phase = self.training_task.result()
+            except Exception as error:
+                self.training_error = str(error)
+            finally:
+                self.training_task = None
+            try:
+                self._close_training_cycle(self.training_pair if phase == "uv" else None)
+            except OSError as error:
+                self.training_error = " ".join(filter(None, (self.training_error, str(error))))
+            self.training_pair = None
+            self.training_stage = "failed" if self.training_error else "completed"
+        print("stopCamera() called")
         self.is_running = False
         self._close_camera()
 
@@ -859,8 +993,7 @@ class Bridge(QObject):
         """Optional: from Reset button"""
         print("🔁 resetSystem() called from JS")
         # Stop + fully close camera
-        self.is_running = False
-        self._close_camera()
+        self.stopCamera()
         self.process.ui_reset_request = True
         # Add PLC reset or other logic here if needed
 
@@ -868,9 +1001,8 @@ class Bridge(QObject):
     def Emergency(self):
         """Called from JS UI 'Emergency' button"""
         print("[UI] EMERGENCY button pressed")
-        self.is_running = False
-        self._close_camera()
         self.process.ui_emergency_request = True
+        self.stopCamera()
 
 
     @pyqtSlot(result=bool)
@@ -1410,6 +1542,8 @@ class Bridge(QObject):
 
     isEnd = True
     def _check_shift_end(self):
+        if self._shutting_down:
+            return
         """
         Old logic, but FIXED:
 
@@ -1595,11 +1729,16 @@ class Bridge(QObject):
             )
         """)
 
+    def _training_connection(self):
+        if self.training_plc_enabled:
+            return get_conn()
+        return sqlite3.connect(self.training_root / ".jobs.sqlite3")
+
     def _training_job_folders(self, conn, job_id):
         job_dir = self._training_job_dir(job_id)
         if job_dir is None or not self._valid_training_folder(job_dir.name):
             raise ValueError("Enter a valid Job ID.")
-        root = TRAINING_IMAGES_DIR.resolve()
+        root = self.training_root.resolve()
         resolved = job_dir.resolve()
         if resolved != root / job_dir.name or (os.path.lexists(job_dir) and not job_dir.is_dir()):
             raise ValueError("The Job ID path is unavailable or redirects to another location.")
@@ -1621,12 +1760,19 @@ class Bridge(QObject):
             raise ValueError("The saved folder mapping does not match the folders on disk. Review this Job ID before capturing.")
         if mapping is None and len(directories) == 1:
             raise ValueError("This Job ID has one unmapped subfolder. Review the job folders before capturing.")
+        if mapping is None and len(directories) == 2:
+            inferred = [
+                [name for name in directories if re.match(rf"^{prefix}(?:_|$)", name, re.IGNORECASE)]
+                for prefix in ("White_Field", "UV_Light")
+            ]
+            if all(len(matches) == 1 for matches in inferred):
+                mapping = tuple(matches[0] for matches in inferred)
         return job_dir, mapping, directories
 
     @pyqtSlot(str, result=str)
     def getTrainingJobFolders(self, job_id):
         try:
-            with closing(get_conn()) as conn:
+            with closing(self._training_connection()) as conn:
                 self._ensure_training_mapping_table(conn)
                 _, mapping, directories = self._training_job_folders(conn, job_id)
             data = {"ok": True, "white_name": "", "uv_name": ""}
@@ -1701,9 +1847,11 @@ class Bridge(QObject):
 
     @pyqtSlot(str, bool, str, str, result=str)
     def startTraining(self, job_id, use_existing, white_name, uv_name):
-        if self.training_stage not in ("idle", "completed", "failed") or self.is_running:
+        if (self._shutting_down or self.training_stage not in ("idle", "completed", "failed") or self.is_running
+                or (self.process_thread is not None and self.process_thread.isRunning())):
             return json.dumps({"ok": False, "message": "The camera is already in use."})
-        if not self._valid_training_folder(job_id.strip()):
+        job_id = job_id.strip()
+        if not job_id or self._safe_training_job(job_id) != job_id or not self._valid_training_folder(job_id):
             return json.dumps({"ok": False, "message": "Enter a valid Job ID."})
         try:
             names = (
@@ -1716,13 +1864,20 @@ class Bridge(QObject):
         undo = []
         camera_started = False
         try:
-            TRAINING_IMAGES_DIR.mkdir(parents=True, exist_ok=True)
-            with closing(get_conn()) as conn, conn:
+            if not self.training_plc_enabled and self.training_root.resolve() == TRAINING_IMAGES_DIR.resolve():
+                raise ValueError("The laptop training folder must be separate from the production folder.")
+            self.training_root.mkdir(parents=True, exist_ok=True)
+            with closing(self._training_connection()) as conn, conn:
                 conn.execute("BEGIN IMMEDIATE")
                 try:
                     safe_job, folders = self._prepare_training_folders(
                         conn, job_id, use_existing, names, undo
                     )
+                    numbers = (
+                        int(match[1]) for path in self._training_image_names(safe_job)
+                        if (match := re.fullmatch(r"Image_(\d+)\.[^.]+", Path(path).name, re.IGNORECASE))
+                    )
+                    next_number = max(numbers, default=0) + 1
                     if self.startCamera() != "ok":
                         raise OSError("Unable to start the training camera.")
                     camera_started = True
@@ -1738,10 +1893,13 @@ class Bridge(QObject):
 
         self.current_training_job = safe_job
         self.training_dirs = folders
-        self.training_counts = {"white": 0, "uv": 0}
         self.training_error = ""
-        self.training_stage = "white"
-        self.last_training_capture_time = 0
+        self.training_stage = "capturing"
+        self.training_phase = "initializing"
+        self.training_pair = None
+        self.training_number = next_number
+        self.training_next_poll = 0
+        self.training_pair_saved_at = None
         self.training_last_frame = time.monotonic()
         return self.getTrainingCaptureStatus(safe_job)
 
@@ -1762,41 +1920,54 @@ class Bridge(QObject):
             raise OSError("Unable to fully restore training folder paths. " + " ".join(errors))
 
     @pyqtSlot(result=str)
-    def startTrainingUV(self):
-        if self.training_stage != "awaiting_uv":
-            return json.dumps({"ok": False, "message": "Finish White Field capture first."})
-        self.training_stage = "uv"
-        self.last_training_capture_time = 0
-        self.training_last_frame = time.monotonic()
+    def stopTraining(self):
+        if self.training_stage == "capturing":
+            self.training_stage = "stopping"
         return self.getTrainingCaptureStatus(self.current_training_job)
 
-    @pyqtSlot(result=str)
-    def stopTraining(self):
-        if self.training_stage in ("white", "uv"):
-            self.training_stage += "_stopping"
-        return self.getTrainingCaptureStatus(self.current_training_job)
+    def _training_image_roles(self, job_id):
+        if job_id == self.current_training_job:
+            return {path.name: kind for kind, path in self.training_dirs.items()}
+        try:
+            with closing(self._training_connection()) as conn:
+                self._ensure_training_mapping_table(conn)
+                _, mapping, _ = self._training_job_folders(conn, job_id)
+        except (OSError, ValueError, RuntimeError, sqlite3.Error):
+            return {}
+        return dict(zip(mapping, ("white", "uv"))) if mapping else {}
 
     @pyqtSlot(str, result=str)
     def getTrainingCaptureStatus(self, job_id):
-        self._finish_training_save()
+        self._advance_training()
         safe_job = self._safe_training_job(job_id) or self.current_training_job
         is_current = safe_job and safe_job == self.current_training_job
+        roles = self._training_image_roles(safe_job) if safe_job else {}
+        counts = {"white": 0, "uv": 0}
+        for filename in self._training_image_names(safe_job):
+            folder, sep, _ = filename.partition("/")
+            if sep and folder in roles:
+                counts[roles[folder]] += 1
+        phase = self.training_phase
+        if (phase in ("waiting", "clear") and self.training_pair_saved_at is not None
+                and time.monotonic() - self.training_pair_saved_at < 0.7):
+            phase = "paired"
         return json.dumps({
             "ok": True,
             "job_id": safe_job,
             "stage": self.training_stage if is_current else "idle",
-            "white_count": self.training_counts["white"] if is_current else 0,
-            "uv_count": self.training_counts["uv"] if is_current else 0,
+            "phase": phase if is_current else "",
+            "white_count": counts["white"],
+            "uv_count": counts["uv"],
             "message": self.training_error if is_current else "",
-            "folder_count": len(self._training_image_names(safe_job)),
+            "folder_count": sum(counts.values()),
         })
 
     @pyqtSlot(result=str)
     def training_job_options(self):
         jobs = []
         try:
-            if TRAINING_IMAGES_DIR.exists():
-                jobs = [item.name for item in TRAINING_IMAGES_DIR.iterdir() if item.is_dir()]
+            if self.training_root.exists():
+                jobs = [item.name for item in self.training_root.iterdir() if item.is_dir()]
         except Exception as e:
             print("Training jobs read failed:", e)
         return json.dumps([{"job_id": job} for job in sorted(set(jobs))])
@@ -1811,12 +1982,14 @@ class Bridge(QObject):
     @pyqtSlot(str, result=str)
     def getTrainingImageItems(self, job_id):
         items = []
+        roles = self._training_image_roles(job_id)
 
         for filename in self._training_image_names(job_id):
             image_path = self._training_image_path(job_id, filename)
             if image_path is not None:
                 items.append({
                     "filename": filename,
+                    "light": roles.get(filename.rpartition("/")[0], ""),
                     "url": QUrl.fromLocalFile(str(image_path.resolve())).toString(),
                 })
 
@@ -1858,6 +2031,8 @@ class Bridge(QObject):
 
         if image_path is None:
             return json.dumps({"ok": False, "message": "Image not found"})
+        if self.training_pair and image_path.resolve() in self.training_pair:
+            return json.dumps({"ok": False, "message": "Wait until the current image pair finishes before deleting it."})
 
         try:
             image_path.unlink()
@@ -2133,6 +2308,8 @@ class Bridge(QObject):
         Use this for DOWNLOAD button.
         Runs PDF generation in background thread, and emits pdfReady/pdfError.
         """
+        if self._shutting_down:
+            return "Error: application is closing"
         try:
             from PyQt5.QtCore import QRunnable, QThreadPool
 
@@ -2140,14 +2317,19 @@ class Bridge(QObject):
 
             class PdfJob(QRunnable):
                 def run(self):
+                    if bridge._shutting_down:
+                        return
                     try:
                         url = bridge.reports_export_pdf(date_from, date_to, shift_id, color_id, count_id, mode)
+                        if bridge._shutting_down:
+                            return
                         if url:
                             bridge.pdfReady.emit(url)
                         else:
                             bridge.pdfError.emit("PDF generation failed (empty output).")
                     except Exception as e:
-                        bridge.pdfError.emit(str(e))
+                        if not bridge._shutting_down:
+                            bridge.pdfError.emit(str(e))
 
             QThreadPool.globalInstance().start(PdfJob())
             return "OK"

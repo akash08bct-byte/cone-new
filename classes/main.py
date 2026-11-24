@@ -656,7 +656,7 @@ class Process:
         
     #     else:
     #         return first,top_img,id
-    def light_inspection_sequence(self):
+    def light_inspection_sequence(self, stop_requested=None):
         """
         PLC signal-based light inspection.
 
@@ -684,6 +684,9 @@ class Process:
 
         self.running_loop = True
 
+        def should_stop():
+            return not self.running_loop or (stop_requested is not None and stop_requested())
+
         def wait_plc_signal(address, expected_value, signal_name):
             """Wait until a PLC register reaches the expected value."""
 
@@ -694,8 +697,10 @@ class Process:
 
             previous_value = None
 
-            while self.running_loop:
+            while not should_stop():
                 value = read_register(address)
+                if should_stop():
+                    return False
 
                 if value is None:
                     time.sleep(0.1)
@@ -720,6 +725,8 @@ class Process:
             return False
 
         def capture_and_predict(position):
+            if should_stop():
+                return "stopped", None
             if self.capture_frame_cb is None:
                 print(f"❌ Capture callback missing: {position}")
                 return "bad", None
@@ -748,6 +755,8 @@ class Process:
             return status, frame
 
         try:
+            if should_stop():
+                return "stopped", None, 0
             print("=" * 60)
             print("PLC SIGNAL-BASED INSPECTION STARTED")
             print("=" * 60)
@@ -770,7 +779,8 @@ class Process:
             ):
                 return "stopped", None, 0
 
-            time.sleep(WH_STABILIZE)
+            if wait_until(should_stop, WH_STABILIZE):
+                return "stopped", None, 0
 
             status, frame = capture_and_predict("tip")
 
@@ -799,7 +809,8 @@ class Process:
             ):
                 return "stopped", frame, 0
 
-            time.sleep(UV_STABILIZE_TOP)
+            if wait_until(should_stop, UV_STABILIZE_TOP):
+                return "stopped", None, 0
 
             status, frame = capture_and_predict("top")
 
@@ -827,7 +838,8 @@ class Process:
             ):
                 return "stopped", frame, 0
 
-            time.sleep(WH_STABILIZE)
+            if wait_until(should_stop, WH_STABILIZE):
+                return "stopped", None, 0
 
             status, frame = capture_and_predict("bottom_w")
 
@@ -855,7 +867,8 @@ class Process:
             ):
                 return "stopped", frame, 0
 
-            time.sleep(UV_STABILIZE)
+            if wait_until(should_stop, UV_STABILIZE):
+                return "stopped", None, 0
 
             status, frame = capture_and_predict("bottom")
 
@@ -870,6 +883,8 @@ class Process:
                 return "stopped", frame, 0
 
             # Restore live exposure
+            if should_stop():
+                return "stopped", frame, 0
             if self.set_exposure_cb:
                 self.set_exposure_cb(LIVE_EXPOSURE_US)
 
@@ -897,6 +912,8 @@ class Process:
             print("RETURNED RESULT :", final_result.upper())
             print("=" * 60)
 
+            if should_stop():
+                return "stopped", frame, 0
             if final_result == "good":
                 set_reject_alarm(False)
                 set_green(True)
@@ -914,12 +931,17 @@ class Process:
             return final_result, result_image, 0
 
         except Exception as e:
+            if should_stop():
+                return "stopped", None, 0
             print(f"❌ Signal inspection error: {e}")
 
             set_green(False)
             set_reject_alarm(True)
 
-            return "bad", None, 0    
+            return "bad", None, 0
+        finally:
+            self.running_loop = False
+
     def model_path(self, cone_color: str, cone_count: str, pos: str) -> Path:
         base = PREDICTION
         return base / cone_color / cone_count / f"cone_{cone_color}_{pos}_{cone_count}_b7.joblib"

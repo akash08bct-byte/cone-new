@@ -198,24 +198,9 @@
             if (now - lastUpdate < 50) return;
             lastUpdate = now;
 
-            document.getElementById("cameraFeed").src =
-              "data:image/jpeg;base64," + base64Data;
-          });
-
-          bridge.frame_cone.connect(function (jsonStr) {
-            try {
-              const data = JSON.parse(jsonStr);
-              const threadImg = document.getElementById("threadImg");
-              const ringImg = document.getElementById("ringImg");
-
-              if (data.thread) {
-                threadImg.src = "data:image/jpeg;base64," + data.thread;
-              }
-              if (data.tip) {
-                ringImg.src = "data:image/jpeg;base64," + data.tip;
-              }
-            } catch (e) {
-              console.error("Invalid cone frame JSON:", e);
+            const frame = "data:image/jpeg;base64," + base64Data;
+            for (const id of ["cameraFeed", "threadImg", "ringImg"]) {
+              document.getElementById(id).src = frame;
             }
           });
         });

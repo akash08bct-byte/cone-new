@@ -17,7 +17,7 @@ class ProcessWorker(QThread):
             print("🧪 Starting light-only inspection test")
 
             result, result_image, record_id = (
-                self.process.light_inspection_sequence()
+                self.process.light_inspection_sequence(self.isInterruptionRequested)
             )
 
             print(
