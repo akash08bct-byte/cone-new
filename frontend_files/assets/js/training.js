@@ -1,8 +1,6 @@
 let bridge = null;
 let bridgeReady = false;
 let liveMode = false;
-const whiteFieldPrefix = "White_Field";
-const uvLightPrefix = "UV_Light";
 let captureStage = "idle";
 let captureRequest = false;
 let captureRevision = 0;
@@ -83,8 +81,8 @@ function setButtons() {
   $("btnJobSave").disabled = captureRequest || jobLoading || jobBlocked;
   $("jobSelect").disabled = captureRequest;
   $("jobIdInput").disabled = captureRequest;
-  $("whiteFieldName").disabled = captureRequest || jobLoading || jobBlocked;
-  $("uvLightName").disabled = captureRequest || jobLoading || jobBlocked;
+  $("jobMaterial").disabled = captureRequest || jobLoading || jobBlocked;
+  $("jobCount").disabled = captureRequest || jobLoading || jobBlocked;
   document.querySelectorAll(".sidebar-btn").forEach((button) => {
     button.disabled = sessionActive || captureRequest;
   });
@@ -136,10 +134,9 @@ async function loadJobFolders(job) {
   const jobInput = $("jobIdInput");
   jobInput.value = job;
   jobInput.readOnly = Boolean(job);
-  $("whiteFieldName").value = "";
-  $("uvLightName").value = "";
+  $("jobMaterial").value = "";
+  $("jobCount").value = "";
   $("jobError").hidden = true;
-  $("jobFolderHint").hidden = true;
   jobBlocked = false;
   jobLoading = Boolean(job);
   setButtons();
@@ -157,12 +154,8 @@ async function loadJobFolders(job) {
   jobBlocked = !data.ok;
   if (data.ok) {
     refreshCounts(job, revision);
-    $("whiteFieldName").value = data.white_name;
-    $("uvLightName").value = data.uv_name;
-    if (data.message) {
-      $("jobFolderHint").textContent = data.message;
-      $("jobFolderHint").hidden = false;
-    }
+    $("jobMaterial").value = data.material || "";
+    $("jobCount").value = data.count || "";
   } else {
     showJobError(data.message || "Unable to load the saved job folders.");
   }
@@ -276,20 +269,6 @@ function startTraining() {
   openJobModal();
 }
 
-function normalizeFolderInput(id, prefix) {
-  const input = $(id);
-  const name = input.value;
-  if (!name.trim() || /[ .]$/.test(name) || /[<>:"/\\|?*\x00-\x1f]/.test(name)
-    || /^(CON|PRN|AUX|NUL|COM[1-9¹²³]|LPT[1-9¹²³])$/i.test(name.split(".")[0].trimEnd())) {
-    input.value = name;
-    return null;
-  }
-
-  const suffix = name.trim().replace(new RegExp(`^(?:${prefix}[_\\s]*)+`, "i"), "");
-  input.value = suffix ? prefix + "_" + suffix : prefix;
-  return input.value;
-}
-
 async function confirmJobAndStartTraining() {
   if (captureRequest || jobLoading || jobBlocked) return;
   const typedJob = String($("jobIdInput").value || "").trim();
@@ -302,13 +281,14 @@ async function confirmJobAndStartTraining() {
     return;
   }
 
-  const white = normalizeFolderInput("whiteFieldName", whiteFieldPrefix);
-  const uv = normalizeFolderInput("uvLightName", uvLightPrefix);
-  if (!white || !uv) {
-    showJobError("Enter valid White Field and UV Light folder names.");
+  const material = $("jobMaterial").value.trim();
+  const count = $("jobCount").value.trim();
+  if (!material || !count) {
+    showJobError("Enter a Material and Count.");
+    $(material ? "jobCount" : "jobMaterial").focus();
     return;
   }
-  const data = await requestCapture("startTraining", job, Boolean(selectedJob), white, uv);
+  const data = await requestCapture("startTraining", job, Boolean(selectedJob), material, count);
   if (!data.ok) {
     showJobError(data.message);
     return;
@@ -726,6 +706,4 @@ window.addEventListener("load", async () => {
   $("jobSelect").addEventListener("change", (event) => {
     loadJobFolders(event.target.value);
   });
-  $("whiteFieldName").addEventListener("blur", () => normalizeFolderInput("whiteFieldName", whiteFieldPrefix));
-  $("uvLightName").addEventListener("blur", () => normalizeFolderInput("uvLightName", uvLightPrefix));
 });

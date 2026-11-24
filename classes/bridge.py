@@ -20,7 +20,6 @@ import re
 import sqlite3
 from contextlib import closing
 from concurrent.futures import ThreadPoolExecutor
-from uuid import uuid4
 from classes.main import Process, WH_STABILIZE, UV_STABILIZE_TOP
 import json
 from classes.Plc_connection import *
@@ -28,7 +27,7 @@ from pathlib import Path
 from classes.zoom import ImageViewerDialog
 from paths import (
     DB_PATH, GOOD_TIP, SETTINGS_JSON, APP_DIR, PREDICTION,
-    LAPTOP_TRAINING_IMAGES_DIR, TRAINING_IMAGES_DIR, TRAINING_PLC_ENABLED,
+    TRAINING_IMAGES_DIR, TRAINING_PLC_ENABLED,
 )
 import numpy as np
 from classes.database import execute,fetch_all,fetch_one,get_conn
@@ -107,9 +106,7 @@ class Bridge(QObject):
         self._active_shift_id = None
         self.training_stage = "idle"
         self.training_plc_enabled = TRAINING_PLC_ENABLED
-        self.training_root = (
-            TRAINING_IMAGES_DIR if self.training_plc_enabled else LAPTOP_TRAINING_IMAGES_DIR
-        ).absolute()
+        self.training_root = TRAINING_IMAGES_DIR.absolute()
         self.training_simulated_light = None
         self.current_training_job = ""
         self.training_dirs = {}
@@ -685,12 +682,6 @@ class Bridge(QObject):
             re.search(r'[<>:"/\\|?*\x00-\x1f]', name)
             or re.fullmatch(reserved, name.split(".")[0].rstrip(), re.IGNORECASE)
         )
-
-    def _normalize_training_folder(self, name, prefix):
-        if not self._valid_training_folder(name):
-            raise ValueError(f"Enter a valid folder name for {prefix}.")
-        suffix = re.sub(rf"^(?:{prefix}[_\s]*)+", "", name.strip(), flags=re.IGNORECASE)
-        return f"{prefix}_{suffix}" if suffix else prefix
 
     @staticmethod
     def _write_training_image(path, frame):
@@ -1729,10 +1720,13 @@ class Bridge(QObject):
             )
         """)
 
-    def _training_connection(self):
-        if self.training_plc_enabled:
-            return get_conn()
-        return sqlite3.connect(self.training_root / ".jobs.sqlite3")
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS training_job_details (
+                job_id TEXT PRIMARY KEY,
+                material TEXT NOT NULL,
+                count TEXT NOT NULL
+            )
+        """)
 
     def _training_job_folders(self, conn, job_id):
         job_dir = self._training_job_dir(job_id)
@@ -1772,22 +1766,24 @@ class Bridge(QObject):
     @pyqtSlot(str, result=str)
     def getTrainingJobFolders(self, job_id):
         try:
-            with closing(self._training_connection()) as conn:
+            with closing(get_conn()) as conn:
                 self._ensure_training_mapping_table(conn)
-                _, mapping, directories = self._training_job_folders(conn, job_id)
-            data = {"ok": True, "white_name": "", "uv_name": ""}
+                job_dir, mapping, directories = self._training_job_folders(conn, job_id)
+                details = conn.execute(
+                    "SELECT material, count FROM training_job_details WHERE job_id = ?", (job_dir.name,)
+                ).fetchone()
+            data = {"ok": True, "white_name": "", "uv_name": "", "material": "", "count": ""}
+            if details:
+                data["material"], data["count"] = details
             if mapping:
                 data["white_name"], data["uv_name"] = mapping
             elif directories:
-                data["message"] = (
-                    "This older job has no saved lighting assignments. Enter its two existing folder names "
-                    f"in the corresponding fields: {', '.join(sorted(directories))}."
-                )
+                raise ValueError("This older job has no identifiable White Field and UV Light folders.")
             return json.dumps(data)
         except (OSError, ValueError, RuntimeError, sqlite3.Error) as error:
             return json.dumps({"ok": False, "message": str(error)})
 
-    def _prepare_training_folders(self, conn, job_id, use_existing, names, undo):
+    def _prepare_training_folders(self, conn, job_id, use_existing, created_dirs):
         self._ensure_training_mapping_table(conn)
         job_dir, mapping, directories = self._training_job_folders(conn, job_id)
         if use_existing and not job_dir.is_dir():
@@ -1796,83 +1792,53 @@ class Bridge(QObject):
             if job_dir.exists() or mapping is not None:
                 raise ValueError("This Job ID already exists. Select it from the saved jobs list.")
             job_dir.mkdir()
-            undo.append((job_dir, None))
+            created_dirs.append(job_dir)
 
-        targets = [job_dir / name for name in names]
         if mapping is None and directories:
-            matches = []
-            for prefix, name in zip(("White_Field", "UV_Light"), names):
-                candidates = [
-                    folder for folder in directories
-                    if self._valid_training_folder(folder.strip())
-                    and self._normalize_training_folder(folder, prefix) == name
-                ]
-                if len(candidates) != 1:
-                    raise ValueError("Enter the two existing folder names to assign their lighting types.")
-                matches.append(candidates[0])
-            if len(set(matches)) != 2:
-                raise ValueError("Assign a different existing folder to each lighting type.")
-            mapping = tuple(matches)
+            raise ValueError("This older job has no identifiable White Field and UV Light folders.")
+        names = mapping or ("White_Field", "UV_Light")
+        targets = [job_dir / name for name in names]
         if mapping is None:
             for target in targets:
                 target.mkdir()
-                undo.append((target, None))
-        elif tuple(names) != mapping:
-            changes = [(job_dir / old, target) for old, target in zip(mapping, targets) if old != target.name]
-            temporary_moves = []
-            # Move changed folders aside first so name swaps and case-only renames work.
-            for source, target in changes:
-                temporary = job_dir / f".rename-{uuid4().hex}"
-                if os.path.lexists(temporary):
-                    raise FileExistsError(f"Temporary folder already exists: {temporary.name}")
-                source.rename(temporary)
-                undo.append((temporary, source))
-                temporary_moves.append((temporary, target))
-            for temporary, target in temporary_moves:
-                if os.path.lexists(target):
-                    raise FileExistsError(f"The destination already exists: {target.name}")
-                temporary.rename(target)
-                undo.append((target, temporary))
+                created_dirs.append(target)
 
-        if any(target.resolve().name != target.name for target in targets):
-            raise ValueError("The filesystem could not use the folder names exactly as entered.")
         conn.execute("""
             INSERT INTO training_job_folders (job_id, white_folder, uv_folder)
             VALUES (?, ?, ?)
-            ON CONFLICT(job_id) DO UPDATE SET
-                white_folder = excluded.white_folder,
-                uv_folder = excluded.uv_folder
+            ON CONFLICT(job_id) DO NOTHING
         """, (job_dir.name, *names))
         return job_dir.name, dict(zip(("white", "uv"), targets))
 
     @pyqtSlot(str, bool, str, str, result=str)
-    def startTraining(self, job_id, use_existing, white_name, uv_name):
+    def startTraining(self, job_id, use_existing, material, count):
         if (self._shutting_down or self.training_stage not in ("idle", "completed", "failed") or self.is_running
                 or (self.process_thread is not None and self.process_thread.isRunning())):
             return json.dumps({"ok": False, "message": "The camera is already in use."})
         job_id = job_id.strip()
         if not job_id or self._safe_training_job(job_id) != job_id or not self._valid_training_folder(job_id):
             return json.dumps({"ok": False, "message": "Enter a valid Job ID."})
-        try:
-            names = (
-                self._normalize_training_folder(white_name, "White_Field"),
-                self._normalize_training_folder(uv_name, "UV_Light"),
-            )
-        except ValueError as error:
-            return json.dumps({"ok": False, "message": str(error)})
+        material, count = material.strip(), count.strip()
+        if not material or not count:
+            return json.dumps({"ok": False, "message": "Enter a Material and Count."})
 
-        undo = []
+        created_dirs = []
         camera_started = False
         try:
-            if not self.training_plc_enabled and self.training_root.resolve() == TRAINING_IMAGES_DIR.resolve():
-                raise ValueError("The laptop training folder must be separate from the production folder.")
             self.training_root.mkdir(parents=True, exist_ok=True)
-            with closing(self._training_connection()) as conn, conn:
+            with closing(get_conn()) as conn, conn:
                 conn.execute("BEGIN IMMEDIATE")
                 try:
                     safe_job, folders = self._prepare_training_folders(
-                        conn, job_id, use_existing, names, undo
+                        conn, job_id, use_existing, created_dirs
                     )
+                    conn.execute("""
+                        INSERT INTO training_job_details (job_id, material, count)
+                        VALUES (?, ?, ?)
+                        ON CONFLICT(job_id) DO UPDATE SET
+                            material = excluded.material,
+                            count = excluded.count
+                    """, (safe_job, material, count))
                     numbers = (
                         int(match[1]) for path in self._training_image_names(safe_job)
                         if (match := re.fullmatch(r"Image_(\d+)\.[^.]+", Path(path).name, re.IGNORECASE))
@@ -1883,8 +1849,7 @@ class Bridge(QObject):
                     camera_started = True
                     conn.commit()
                 except (OSError, ValueError, RuntimeError, sqlite3.Error):
-                    # Keep the DB write lock while restoring the original folder paths.
-                    self._restore_training_folders(undo)
+                    self._remove_empty_training_folders(created_dirs)
                     raise
         except (OSError, ValueError, RuntimeError, sqlite3.Error) as error:
             if camera_started:
@@ -1904,20 +1869,15 @@ class Bridge(QObject):
         return self.getTrainingCaptureStatus(safe_job)
 
     @staticmethod
-    def _restore_training_folders(undo):
+    def _remove_empty_training_folders(created_dirs):
         errors = []
-        for source, target in reversed(undo):
+        for folder in reversed(created_dirs):
             try:
-                if target is None:
-                    source.rmdir()
-                else:
-                    if os.path.lexists(target):
-                        raise FileExistsError(str(target))
-                    source.rename(target)
+                folder.rmdir()
             except OSError as error:
-                errors.append(f"{source.name}: {error}")
+                errors.append(f"{folder.name}: {error}")
         if errors:
-            raise OSError("Unable to fully restore training folder paths. " + " ".join(errors))
+            raise OSError("Unable to remove newly created training folders. " + " ".join(errors))
 
     @pyqtSlot(result=str)
     def stopTraining(self):
@@ -1929,7 +1889,7 @@ class Bridge(QObject):
         if job_id == self.current_training_job:
             return {path.name: kind for kind, path in self.training_dirs.items()}
         try:
-            with closing(self._training_connection()) as conn:
+            with closing(get_conn()) as conn:
                 self._ensure_training_mapping_table(conn)
                 _, mapping, _ = self._training_job_folders(conn, job_id)
         except (OSError, ValueError, RuntimeError, sqlite3.Error):

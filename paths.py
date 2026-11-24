@@ -63,8 +63,6 @@ os.makedirs(DEFECT_SAVE_DIR, exist_ok=True)
 
 TRAINING_IMAGES_DIR = RUN_DIR / "training_images"
 os.makedirs(TRAINING_IMAGES_DIR, exist_ok=True)
-LAPTOP_TRAINING_IMAGES_DIR = RUN_DIR / "training_images_laptop"
-
 # Set to 1 on the production machine. Laptop capture is the development default.
 _training_plc_setting = os.environ.get("CONE_TRAINING_PLC_ENABLED", "0")
 if _training_plc_setting not in ("0", "1"):
