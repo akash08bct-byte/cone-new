@@ -209,7 +209,7 @@
 
 .stats-grid {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 10px;
   margin-top: 16px;
 }
@@ -351,6 +351,23 @@
 .job-modal-body .job-input,
 .job-modal-body .job-select {
   margin-top: 8px;
+}
+
+.job-modal-body .job-input + .field-label {
+  display: block;
+  margin-top: 12px;
+}
+
+#captureStatus,
+#jobFolderHint,
+#jobError {
+  margin: 12px 0 0;
+  font-size: 14px;
+  overflow-wrap: anywhere;
+}
+
+#jobError {
+  color: var(--danger);
 }
 
 .modal-divider {

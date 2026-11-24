@@ -1,7 +1,14 @@
 let bridge = null;
 let bridgeReady = false;
 let liveMode = false;
-let trainingMode = false;
+const whiteFieldPrefix = "White_Field";
+const uvLightPrefix = "UV_Light";
+let captureStage = "idle";
+let captureRequest = false;
+let captureRevision = 0;
+let jobLookupRevision = 0;
+let jobLoading = false;
+let jobBlocked = false;
 let activeJob = "";
 let countTimer = null;
 let selectedImage = "";
@@ -66,10 +73,20 @@ function updateCameraFrame(base64Data) {
 }
 
 function setButtons() {
-  $("btnLiveStart").disabled = liveMode || trainingMode;
-  $("btnLiveStop").disabled = !liveMode;
-  $("btnStartTraining").disabled = liveMode || trainingMode;
-  $("btnStopTraining").disabled = !trainingMode;
+  const sessionActive = ["white", "white_stopping", "awaiting_uv", "uv", "uv_stopping"].includes(captureStage);
+  $("btnLiveStart").disabled = liveMode || sessionActive || captureRequest;
+  $("btnLiveStop").disabled = !liveMode || captureRequest;
+  $("btnStartTraining").disabled = liveMode || sessionActive || captureRequest;
+  $("btnStopTraining").disabled = captureRequest || !["white", "uv"].includes(captureStage);
+  $("btnCollectUV").disabled = captureRequest || captureStage !== "awaiting_uv";
+  $("btnJobSave").disabled = captureRequest || jobLoading || jobBlocked;
+  $("jobSelect").disabled = captureRequest;
+  $("jobIdInput").disabled = captureRequest;
+  $("whiteFieldName").disabled = captureRequest || jobLoading || jobBlocked;
+  $("uvLightName").disabled = captureRequest || jobLoading || jobBlocked;
+  document.querySelectorAll(".sidebar-btn").forEach((button) => {
+    button.disabled = sessionActive || captureRequest;
+  });
 }
 
 function currentJob() {
@@ -96,9 +113,9 @@ function openJobModal() {
   const input = $("jobIdInput");
   const select = $("jobSelect");
   select.value = activeJob || "";
-  input.value = activeJob || "";
   modal.classList.add("open");
   modal.setAttribute("aria-hidden", "false");
+  loadJobFolders(select.value);
   window.setTimeout(() => {
     if (select.options.length > 1) select.focus();
     else input.focus();
@@ -106,14 +123,48 @@ function openJobModal() {
 }
 
 function closeJobModal() {
+  if (captureRequest) return;
+  jobLookupRevision += 1;
   const modal = $("jobModal");
   modal.classList.remove("open");
   modal.setAttribute("aria-hidden", "true");
 }
 
-function setCounts(sessionCount, folderCount) {
-  $("sessionCount").textContent = String(sessionCount || 0);
-  $("folderCount").textContent = String(folderCount || 0);
+async function loadJobFolders(job) {
+  const revision = ++jobLookupRevision;
+  const jobInput = $("jobIdInput");
+  jobInput.value = job;
+  jobInput.readOnly = Boolean(job);
+  $("whiteFieldName").value = job ? "" : whiteFieldPrefix;
+  $("uvLightName").value = job ? "" : uvLightPrefix;
+  $("jobError").hidden = true;
+  $("jobFolderHint").hidden = true;
+  jobBlocked = false;
+  jobLoading = Boolean(job);
+  setButtons();
+  if (!job) return;
+
+  let data;
+  try {
+    data = JSON.parse(await callBridge("getTrainingJobFolders", job) || "{}");
+  } catch (error) {
+    data = {};
+  }
+  if (revision !== jobLookupRevision) return;
+
+  jobLoading = false;
+  jobBlocked = !data.ok;
+  if (data.ok) {
+    $("whiteFieldName").value = data.white_name;
+    $("uvLightName").value = data.uv_name;
+    if (data.message) {
+      $("jobFolderHint").textContent = data.message;
+      $("jobFolderHint").hidden = false;
+    }
+  } else {
+    showJobError(data.message || "Unable to load the saved job folders.");
+  }
+  setButtons();
 }
 
 function setSelectedJob(jobId) {
@@ -124,36 +175,56 @@ function setSelectedJob(jobId) {
   }
 }
 
-async function refreshCounts(jobId = activeJob || currentJob()) {
-  if (!jobId) {
-    setCounts(0, 0);
-    return;
-  }
-
-  const b = await initBridge();
-  if (!b || !b.getTrainingCaptureStatus) return;
-
+async function refreshCounts(jobId = currentJob()) {
+  if (captureRequest || !bridge) return;
+  const revision = captureRevision;
   try {
     const raw = await callBridge("getTrainingCaptureStatus", jobId);
     const data = JSON.parse(raw || "{}");
-    if (data.ok) {
-      setCounts(data.session_count, data.folder_count);
-    }
+    if (data.ok && revision === captureRevision && !captureRequest) applyCaptureStatus(data);
   } catch (error) {
     console.error("Count refresh failed:", error);
   }
 }
 
-function startCountTimer() {
-  stopCountTimer();
-  refreshCounts(activeJob);
-  countTimer = window.setInterval(() => refreshCounts(activeJob), 1000);
-}
+function applyCaptureStatus(data) {
+  const previous = captureStage;
+  captureStage = data.stage;
+  if (data.job_id) setSelectedJob(data.job_id);
+  $("whiteCount").textContent = data.white_count;
+  $("uvCount").textContent = data.uv_count;
+  $("folderCount").textContent = data.folder_count;
+  const messages = {
+    idle: "Ready to capture.",
+    white: "Collecting White Field images…",
+    white_stopping: "Saving the last White Field image…",
+    awaiting_uv: "Switch the lighting, then click Collect UV Images.",
+    uv: "Collecting UV Light images…",
+    uv_stopping: "Saving the last UV Light image…",
+    completed: `Job ${data.job_id} completed. White Field: ${data.white_count}. UV Light: ${data.uv_count}.`,
+    failed: data.message || "Capture failed.",
+  };
+  if ($("captureStatus").textContent !== messages[captureStage]) {
+    $("captureStatus").textContent = messages[captureStage];
+  }
+  setButtons();
 
-function stopCountTimer() {
-  if (countTimer) {
-    window.clearInterval(countTimer);
-    countTimer = null;
+  window.clearTimeout(countTimer);
+  if (["white", "white_stopping", "uv", "uv_stopping"].includes(captureStage)) {
+    countTimer = window.setTimeout(() => refreshCounts(), 500);
+  }
+  if (captureStage !== previous && ["awaiting_uv", "completed", "failed"].includes(captureStage)) {
+    const galleryReady = refreshGallery();
+    if (captureStage !== "awaiting_uv") {
+      $("previewStage").classList.remove("active");
+      $("cameraFeed").removeAttribute("src");
+      if (captureStage === "completed" && ["uv", "uv_stopping"].includes(previous)) {
+        const revision = captureRevision;
+        galleryReady.then(() => {
+          if (revision === captureRevision) openCaptureModal();
+        });
+      }
+    }
   }
 }
 
@@ -164,7 +235,11 @@ async function startLive() {
     return;
   }
 
-  await callBridge("startCamera");
+  const result = await callBridge("startCamera");
+  if (result !== "ok" && result !== "already_running") {
+    toast("Unable to start the camera");
+    return;
+  }
   liveMode = true;
   setButtons();
   toast("Live camera started");
@@ -187,55 +262,85 @@ function startTraining() {
   openJobModal();
 }
 
+function normalizeFolderInput(id, prefix) {
+  const input = $(id);
+  const name = input.value.trim();
+  if (!name || name.endsWith(".") || /[<>:"/\\|?*\x00-\x1f]/.test(name)
+    || /^(CON|PRN|AUX|NUL|COM[1-9¹²³]|LPT[1-9¹²³])$/i.test(name.split(".")[0].trimEnd())) {
+    input.value = name;
+    return null;
+  }
+
+  const hasPrefix = name.slice(0, prefix.length).toLowerCase() === prefix.toLowerCase();
+  const suffix = (hasPrefix ? name.slice(prefix.length) : name).replace(/^[_\s]+/, "");
+  input.value = suffix ? prefix + "_" + suffix : prefix;
+  return input.value;
+}
+
 async function confirmJobAndStartTraining() {
+  if (captureRequest || jobLoading || jobBlocked) return;
   const typedJob = String($("jobIdInput").value || "").trim();
   const selectedJob = String($("jobSelect").value || "").trim();
-  const job = typedJob || selectedJob;
+  const job = selectedJob || typedJob;
   if (!job) {
-    toast("Choose or enter a Job ID");
+    showJobError("Choose or enter a Job ID.");
     if ($("jobSelect").options.length > 1) $("jobSelect").focus();
     else $("jobIdInput").focus();
     return;
   }
 
-  const b = await initBridge();
-  if (!b || !b.startTraining) {
-    toast("Bridge not connected");
+  const white = normalizeFolderInput("whiteFieldName", whiteFieldPrefix);
+  const uv = normalizeFolderInput("uvLightName", uvLightPrefix);
+  if (!white || !uv) {
+    showJobError("Enter valid White Field and UV Light folder names.");
     return;
   }
-
-  setSelectedJob(job);
+  const data = await requestCapture("startTraining", job, Boolean(selectedJob), white, uv);
+  if (!data.ok) {
+    showJobError(data.message);
+    return;
+  }
+  applyCaptureStatus(data);
   ensureJobOption(activeJob);
   closeJobModal();
-  await callBridge("startTraining", activeJob);
-  trainingMode = true;
-  setButtons();
-  startCountTimer();
-  await refreshGallery(activeJob);
-  toast(`Capture started: ${activeJob}`);
+  refreshGallery();
 }
 
-async function stopTraining() {
-  const b = await initBridge();
-  if (b && b.stopTraining) {
-    await callBridge("stopTraining");
-  }
+function showJobError(message) {
+  $("jobError").textContent = message;
+  $("jobError").hidden = false;
+}
 
-  trainingMode = false;
-  stopCountTimer();
-  $("previewStage").classList.remove("active");
-  $("cameraFeed").removeAttribute("src");
+async function requestCapture(method, ...args) {
+  captureRevision += 1;
+  captureRequest = true;
+  window.clearTimeout(countTimer);
   setButtons();
-  await refreshJobs();
-  await refreshCounts(activeJob);
-  await openCaptureModal(activeJob);
-  toast("Capture stopped");
+  try {
+    const result = JSON.parse(await callBridge(method, ...args) || "{}");
+    return result.ok ? result : { ok: false, message: result.message || "Capture controls are unavailable." };
+  } catch (error) {
+    return { ok: false, message: "Unable to communicate with the training camera." };
+  } finally {
+    captureRequest = false;
+    setButtons();
+  }
+}
+
+async function changeCaptureStage(method) {
+  if (captureRequest) return;
+  const data = await requestCapture(method);
+  if (data.ok) applyCaptureStatus(data);
+  else {
+    toast(data.message);
+    refreshCounts();
+  }
 }
 
 async function refreshJobs() {
   const select = $("jobSelect");
   const current = activeJob;
-  select.innerHTML = '<option value="">Saved jobs</option>';
+  select.innerHTML = '<option value="">Create new job</option>';
 
   const b = await initBridge();
   if (!b || !b.training_job_options) return;
@@ -546,13 +651,16 @@ function openSettingPage() {
 
 window.addEventListener("load", async () => {
   await initBridge();
+  await refreshCounts();
   await refreshJobs();
+  if (activeJob && captureStage !== "completed") await refreshGallery();
   setButtons();
 
   $("btnLiveStart").addEventListener("click", startLive);
   $("btnLiveStop").addEventListener("click", stopLive);
   $("btnStartTraining").addEventListener("click", startTraining);
-  $("btnStopTraining").addEventListener("click", stopTraining);
+  $("btnStopTraining").addEventListener("click", () => changeCaptureStage("stopTraining"));
+  $("btnCollectUV").addEventListener("click", () => changeCaptureStage("startTrainingUV"));
   $("btnDeleteImage").addEventListener("click", deleteSelectedImage);
   $("btnCaptureTrainModel").addEventListener("click", trainModel);
   $("btnCaptureModalClose").addEventListener("click", closeCaptureModal);
@@ -568,10 +676,12 @@ window.addEventListener("load", async () => {
   $("jobModal").addEventListener("click", (event) => {
     if (event.target === $("jobModal")) closeJobModal();
   });
-  $("jobIdInput").addEventListener("keydown", (event) => {
-    if (event.key === "Enter") confirmJobAndStartTraining();
+  $("jobModal").addEventListener("keydown", (event) => {
+    if (event.key === "Enter" && event.target.matches("input")) confirmJobAndStartTraining();
   });
   $("jobSelect").addEventListener("change", (event) => {
-    $("jobIdInput").value = event.target.value;
+    loadJobFolders(event.target.value);
   });
+  $("whiteFieldName").addEventListener("blur", () => normalizeFolderInput("whiteFieldName", whiteFieldPrefix));
+  $("uvLightName").addEventListener("blur", () => normalizeFolderInput("uvLightName", uvLightPrefix));
 });

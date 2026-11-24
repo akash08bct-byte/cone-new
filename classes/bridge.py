@@ -16,6 +16,11 @@ from classes.pdf_compress import compress_pdf
 #     MVSDK_AVAILABLE = False
 #     print("MindVision SDK not available. Camera functions will be disabled.")
 import time
+import re
+import sqlite3
+from contextlib import closing
+from concurrent.futures import ThreadPoolExecutor
+from uuid import uuid4
 from classes.main import Process
 from classes.compare_tips import detect_thread_circle
 import json
@@ -24,7 +29,7 @@ from pathlib import Path
 from classes.zoom import ImageViewerDialog
 from paths import DB_PATH, GOOD_TIP, SETTINGS_JSON, APP_DIR, PREDICTION, TRAINING_IMAGES_DIR
 import numpy as np
-from classes.database import execute,fetch_all,fetch_one
+from classes.database import execute,fetch_all,fetch_one,get_conn
 
 def file_url_to_path(url: str) -> str:
     """Convert file:// URL to system file path"""
@@ -97,9 +102,14 @@ class Bridge(QObject):
 
         #modified by Gokul
         self._active_shift_id = None
-        self.training_running = False
+        self.training_stage = "idle"
         self.current_training_job = ""
-        self.training_count = 0
+        self.training_dirs = {}
+        self.training_counts = {"white": 0, "uv": 0}
+        self.training_error = ""
+        self.training_save = None
+        self.training_writer = ThreadPoolExecutor(max_workers=1)
+        self.training_last_frame = 0
         self.last_training_capture_time = 0
         self.training_capture_interval = 0.5
 
@@ -546,6 +556,12 @@ class Bridge(QObject):
             print("❌ Camera close error:", e)
     # --------- GRAB + SEND ---------
     def _grab_and_send_frame(self):
+        self._finish_training_save()
+        if (self.training_stage in ("white", "uv")
+                and time.monotonic() - self.training_last_frame > 5):
+            self.training_error = "Camera stopped delivering frames."
+            self.training_stage += "_stopping"
+            self._finish_training_save()
         if self.camera is None:
             return
 
@@ -572,12 +588,12 @@ class Bridge(QObject):
                 print("⚠️ JPEG encoding failed")
                 return
 
-            b64 = base64.b64encode(
-                buffer.tobytes()
-            ).decode("ascii")
+            b64 = base64.b64encode(buffer.tobytes()).decode("ascii")
 
             self.frame_signal.emit(b64)
             self._capture_training_frame(frame)
+            if self.training_stage in ("white", "white_stopping", "awaiting_uv", "uv", "uv_stopping"):
+                return
 
             # Publish the processed thread/ring views while the Home live view
             # is running.  The inspection worker also publishes these images,
@@ -614,32 +630,98 @@ class Bridge(QObject):
             return []
 
         exts = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
-        return sorted(
-            item.name
-            for item in job_dir.iterdir()
-            if item.is_file() and item.suffix.lower() in exts
+        try:
+            entries = list(job_dir.iterdir())
+            for folder in list(entries):
+                if folder.is_dir() and folder.resolve() == TRAINING_IMAGES_DIR.resolve() / job_dir.name / folder.name:
+                    entries.extend(folder.iterdir())
+            return sorted(
+                item.relative_to(job_dir).as_posix() for item in entries
+                if item.suffix.lower() in exts
+                and self._training_image_path(job_id, item.relative_to(job_dir).as_posix())
+            )
+        except OSError as error:
+            print("Training gallery read failed:", error)
+            return []
+
+    def _training_image_path(self, job_id, filename):
+        job_dir = self._training_job_dir(job_id)
+        parts = str(filename or "").split("/")
+        if job_dir is None or len(parts) > 2 or not all(map(self._valid_training_folder, parts)):
+            return None
+        path = job_dir.joinpath(*parts)
+        if path.is_file() and path.resolve() == TRAINING_IMAGES_DIR.resolve().joinpath(job_dir.name, *parts):
+            return path
+        return None
+
+    @staticmethod
+    def _valid_training_folder(name):
+        if not name.strip() or name.endswith((" ", ".")):
+            return False
+        reserved = r"(CON|PRN|AUX|NUL|COM[1-9¹²³]|LPT[1-9¹²³])"
+        return not (
+            re.search(r'[<>:"/\\|?*\x00-\x1f]', name)
+            or re.fullmatch(reserved, name.split(".")[0].rstrip(), re.IGNORECASE)
         )
 
-    def _capture_training_frame(self, frame):
-        if not self.training_running or not self.current_training_job:
-            return
+    def _normalize_training_folder(self, name, prefix):
+        name = name.strip()
+        if not self._valid_training_folder(name):
+            raise ValueError(f"Enter a valid folder name for {prefix}.")
+        suffix = name[len(prefix):] if name[:len(prefix)].lower() == prefix.lower() else name
+        suffix = re.sub(r"^[_\s]+", "", suffix)
+        return f"{prefix}_{suffix}" if suffix else prefix
 
-        now = time.time()
-        if now - self.last_training_capture_time < self.training_capture_interval:
-            return
-
-        job_dir = self._training_job_dir(self.current_training_job)
-        if job_dir is None:
-            return
-
+    @staticmethod
+    def _write_training_image(path, frame):
+        ok, jpeg = cv2.imencode(".jpg", frame)
+        if not ok:
+            raise OSError("JPEG encoding failed.")
+        temporary = path.with_suffix(".tmp")
         try:
-            job_dir.mkdir(parents=True, exist_ok=True)
-            self.last_training_capture_time = now
-            self.training_count += 1
-            filename = time.strftime("%Y%m%d_%H%M%S") + f"_{self.training_count:04d}.jpg"
-            cv2.imwrite(str(job_dir / filename), frame)
-        except Exception as e:
-            print("Training image save failed:", e)
+            temporary.write_bytes(jpeg.tobytes())
+            # The unique file name belongs to this capture. Publish only complete JPEGs.
+            temporary.rename(path)
+        finally:
+            temporary.unlink(missing_ok=True)
+
+    def _capture_training_frame(self, frame):
+        phase = self.training_stage
+        if phase not in ("white", "uv"):
+            return
+
+        now = time.monotonic()
+        self.training_last_frame = now
+        if self.training_save is not None or now - self.last_training_capture_time < self.training_capture_interval:
+            return
+
+        self.last_training_capture_time = now
+        filename = time.strftime("%Y%m%d_%H%M%S") + f"_{uuid4().hex}.jpg"
+        self.training_save = self.training_writer.submit(
+            self._write_training_image, self.training_dirs[phase] / filename, frame.copy()
+        )
+
+    def _finish_training_save(self):
+        phase = self.training_stage.split("_")[0]
+        if self.training_save is not None:
+            if not self.training_save.done():
+                return
+            try:
+                self.training_save.result()
+                self.training_counts[phase] += 1
+            except Exception as error:
+                self.training_error = f"Unable to save training image: {error}"
+                self.training_stage = f"{phase}_stopping"
+            finally:
+                self.training_save = None
+
+        if self.training_stage in ("white_stopping", "uv_stopping"):
+            if self.training_error:
+                self.training_stage = "failed"
+            else:
+                self.training_stage = "awaiting_uv" if phase == "white" else "completed"
+            if self.training_stage != "awaiting_uv":
+                self.stopCamera()
 
     # --------- SLOTS CALLED FROM JS ---------
     # @pyqtSlot(result=str)
@@ -1503,33 +1585,209 @@ class Bridge(QObject):
         except Exception as e:
             print("training issue:", e)
 
+    @staticmethod
+    def _ensure_training_mapping_table(conn):
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS training_job_folders (
+                job_id TEXT PRIMARY KEY,
+                white_folder TEXT NOT NULL,
+                uv_folder TEXT NOT NULL
+            )
+        """)
+
+    def _training_job_folders(self, conn, job_id):
+        job_dir = self._training_job_dir(job_id)
+        if job_dir is None or not self._valid_training_folder(job_dir.name):
+            raise ValueError("Enter a valid Job ID.")
+        root = TRAINING_IMAGES_DIR.resolve()
+        resolved = job_dir.resolve()
+        if resolved != root / job_dir.name or (os.path.lexists(job_dir) and not job_dir.is_dir()):
+            raise ValueError("The Job ID path is unavailable or redirects to another location.")
+        job_dir = resolved
+        mapping = conn.execute(
+            "SELECT white_folder, uv_folder FROM training_job_folders WHERE job_id = ?",
+            (job_dir.name,),
+        ).fetchone()
+        directories = []
+        if job_dir.is_dir():
+            for entry in job_dir.iterdir():
+                if entry.is_symlink() or (entry.is_dir() and entry.resolve() != entry):
+                    raise ValueError("This Job ID contains a redirected path. Review the job folders before capturing.")
+                if entry.is_dir():
+                    directories.append(entry.name)
+        if len(directories) > 2:
+            raise ValueError("This Job ID has more than two subfolders. Review them before capturing.")
+        if mapping and (len(directories) != 2 or set(mapping) != set(directories)):
+            raise ValueError("The saved folder mapping does not match the folders on disk. Review this Job ID before capturing.")
+        if mapping is None and len(directories) == 1:
+            raise ValueError("This Job ID has one unmapped subfolder. Review the job folders before capturing.")
+        return job_dir, mapping, directories
+
     @pyqtSlot(str, result=str)
-    def startTraining(self, job_id=""):
-        safe_job = self._safe_training_job(job_id)
-        if not safe_job:
-            print("Training start ignored: missing job id")
-            return "missing_job"
+    def getTrainingJobFolders(self, job_id):
+        try:
+            with closing(get_conn()) as conn:
+                self._ensure_training_mapping_table(conn)
+                _, mapping, directories = self._training_job_folders(conn, job_id)
+            data = {"ok": True, "white_name": "", "uv_name": ""}
+            if mapping:
+                data["white_name"], data["uv_name"] = mapping
+            elif directories:
+                data["message"] = (
+                    "This older job has no saved lighting assignments. Enter its two existing folder names "
+                    f"in the corresponding fields: {', '.join(sorted(directories))}."
+                )
+            return json.dumps(data)
+        except (OSError, ValueError, RuntimeError, sqlite3.Error) as error:
+            return json.dumps({"ok": False, "message": str(error)})
+
+    def _prepare_training_folders(self, conn, job_id, use_existing, names, undo):
+        self._ensure_training_mapping_table(conn)
+        job_dir, mapping, directories = self._training_job_folders(conn, job_id)
+        if use_existing and not job_dir.is_dir():
+            raise ValueError("The selected Job ID folder is missing.")
+        if not use_existing:
+            if job_dir.exists() or mapping is not None:
+                raise ValueError("This Job ID already exists. Select it from the saved jobs list.")
+            job_dir.mkdir()
+            undo.append((job_dir, None))
+
+        targets = [job_dir / name for name in names]
+        if mapping is None and directories:
+            matches = []
+            for prefix, name in zip(("White_Field", "UV_Light"), names):
+                candidates = [
+                    folder for folder in directories
+                    if self._valid_training_folder(folder.strip())
+                    and self._normalize_training_folder(folder, prefix) == name
+                ]
+                if len(candidates) != 1:
+                    raise ValueError("Enter the two existing folder names to assign their lighting types.")
+                matches.append(candidates[0])
+            if len(set(matches)) != 2:
+                raise ValueError("Assign a different existing folder to each lighting type.")
+            mapping = tuple(matches)
+        if mapping is None:
+            for target in targets:
+                target.mkdir()
+                undo.append((target, None))
+        elif tuple(names) != mapping:
+            changes = [(job_dir / old, target) for old, target in zip(mapping, targets) if old != target.name]
+            temporary_moves = []
+            # Move changed folders aside first so name swaps and case-only renames work.
+            for source, target in changes:
+                temporary = job_dir / f".rename-{uuid4().hex}"
+                if os.path.lexists(temporary):
+                    raise FileExistsError(f"Temporary folder already exists: {temporary.name}")
+                source.rename(temporary)
+                undo.append((temporary, source))
+                temporary_moves.append((temporary, target))
+            for temporary, target in temporary_moves:
+                if os.path.lexists(target):
+                    raise FileExistsError(f"The destination already exists: {target.name}")
+                temporary.rename(target)
+                undo.append((target, temporary))
+
+        if any(target.resolve().name != target.name for target in targets):
+            raise ValueError("The filesystem could not use the folder names exactly as entered.")
+        conn.execute("""
+            INSERT INTO training_job_folders (job_id, white_folder, uv_folder)
+            VALUES (?, ?, ?)
+            ON CONFLICT(job_id) DO UPDATE SET
+                white_folder = excluded.white_folder,
+                uv_folder = excluded.uv_folder
+        """, (job_dir.name, *names))
+        return job_dir.name, dict(zip(("white", "uv"), targets))
+
+    @pyqtSlot(str, bool, str, str, result=str)
+    def startTraining(self, job_id, use_existing, white_name, uv_name):
+        if self.training_stage not in ("idle", "completed", "failed") or self.is_running:
+            return json.dumps({"ok": False, "message": "The camera is already in use."})
+        if not self._valid_training_folder(job_id.strip()):
+            return json.dumps({"ok": False, "message": "Enter a valid Job ID."})
+        try:
+            names = (
+                self._normalize_training_folder(white_name, "White_Field"),
+                self._normalize_training_folder(uv_name, "UV_Light"),
+            )
+        except ValueError as error:
+            return json.dumps({"ok": False, "message": str(error)})
+
+        undo = []
+        camera_started = False
+        try:
+            TRAINING_IMAGES_DIR.mkdir(parents=True, exist_ok=True)
+            with closing(get_conn()) as conn, conn:
+                conn.execute("BEGIN IMMEDIATE")
+                try:
+                    safe_job, folders = self._prepare_training_folders(
+                        conn, job_id, use_existing, names, undo
+                    )
+                    if self.startCamera() != "ok":
+                        raise OSError("Unable to start the training camera.")
+                    camera_started = True
+                    conn.commit()
+                except (OSError, ValueError, RuntimeError, sqlite3.Error):
+                    # Keep the DB write lock while restoring the original folder paths.
+                    self._restore_training_folders(undo)
+                    raise
+        except (OSError, ValueError, RuntimeError, sqlite3.Error) as error:
+            if camera_started:
+                self.stopCamera()
+            return json.dumps({"ok": False, "message": str(error)})
 
         self.current_training_job = safe_job
-        self.training_running = True
-        self.training_count = 0
+        self.training_dirs = folders
+        self.training_counts = {"white": 0, "uv": 0}
+        self.training_error = ""
+        self.training_stage = "white"
         self.last_training_capture_time = 0
-        self.startCamera()
-        return "ok"
+        self.training_last_frame = time.monotonic()
+        return self.getTrainingCaptureStatus(safe_job)
+
+    @staticmethod
+    def _restore_training_folders(undo):
+        errors = []
+        for source, target in reversed(undo):
+            try:
+                if target is None:
+                    source.rmdir()
+                else:
+                    if os.path.lexists(target):
+                        raise FileExistsError(str(target))
+                    source.rename(target)
+            except OSError as error:
+                errors.append(f"{source.name}: {error}")
+        if errors:
+            raise OSError("Unable to fully restore training folder paths. " + " ".join(errors))
+
+    @pyqtSlot(result=str)
+    def startTrainingUV(self):
+        if self.training_stage != "awaiting_uv":
+            return json.dumps({"ok": False, "message": "Finish White Field capture first."})
+        self.training_stage = "uv"
+        self.last_training_capture_time = 0
+        self.training_last_frame = time.monotonic()
+        return self.getTrainingCaptureStatus(self.current_training_job)
 
     @pyqtSlot(result=str)
     def stopTraining(self):
-        self.training_running = False
-        self.stopCamera()
-        return "ok"
+        if self.training_stage in ("white", "uv"):
+            self.training_stage += "_stopping"
+        return self.getTrainingCaptureStatus(self.current_training_job)
 
     @pyqtSlot(str, result=str)
     def getTrainingCaptureStatus(self, job_id):
-        safe_job = self._safe_training_job(job_id)
+        self._finish_training_save()
+        safe_job = self._safe_training_job(job_id) or self.current_training_job
         is_current = safe_job and safe_job == self.current_training_job
         return json.dumps({
             "ok": True,
-            "session_count": self.training_count if is_current else 0,
+            "job_id": safe_job,
+            "stage": self.training_stage if is_current else "idle",
+            "white_count": self.training_counts["white"] if is_current else 0,
+            "uv_count": self.training_counts["uv"] if is_current else 0,
+            "message": self.training_error if is_current else "",
             "folder_count": len(self._training_image_names(safe_job)),
         })
 
@@ -1552,17 +1810,15 @@ class Bridge(QObject):
 
     @pyqtSlot(str, result=str)
     def getTrainingImageItems(self, job_id):
-        job_dir = self._training_job_dir(job_id)
         items = []
 
-        if job_dir is not None and job_dir.exists():
-            for filename in self._training_image_names(job_id):
-                image_path = job_dir / filename
-                if image_path.exists():
-                    items.append({
-                        "filename": filename,
-                        "url": QUrl.fromLocalFile(str(image_path.resolve())).toString(),
-                    })
+        for filename in self._training_image_names(job_id):
+            image_path = self._training_image_path(job_id, filename)
+            if image_path is not None:
+                items.append({
+                    "filename": filename,
+                    "url": QUrl.fromLocalFile(str(image_path.resolve())).toString(),
+                })
 
         return json.dumps({
             "ok": True,
@@ -1571,11 +1827,9 @@ class Bridge(QObject):
 
     @pyqtSlot(str, str, result=str)
     def getTrainingImage(self, job_id, filename):
-        job_dir = self._training_job_dir(job_id)
-        safe_name = os.path.basename(str(filename or ""))
-        image_path = job_dir / safe_name if job_dir is not None else None
+        image_path = self._training_image_path(job_id, filename)
 
-        if image_path is None or not safe_name or not image_path.exists():
+        if image_path is None:
             return json.dumps({"ok": False, "message": "Image not found"})
 
         try:
@@ -1588,11 +1842,9 @@ class Bridge(QObject):
 
     @pyqtSlot(str, str, result=str)
     def getTrainingImageUrl(self, job_id, filename):
-        job_dir = self._training_job_dir(job_id)
-        safe_name = os.path.basename(str(filename or ""))
-        image_path = job_dir / safe_name if job_dir is not None else None
+        image_path = self._training_image_path(job_id, filename)
 
-        if image_path is None or not safe_name or not image_path.exists():
+        if image_path is None:
             return json.dumps({"ok": False, "message": "Image not found"})
 
         return json.dumps({
@@ -1602,16 +1854,14 @@ class Bridge(QObject):
 
     @pyqtSlot(str, str, result=str)
     def deleteTrainingImage(self, job_id, filename):
-        job_dir = self._training_job_dir(job_id)
-        safe_name = os.path.basename(str(filename or ""))
-        image_path = job_dir / safe_name if job_dir is not None else None
+        image_path = self._training_image_path(job_id, filename)
 
-        if image_path is None or not safe_name or not image_path.exists():
+        if image_path is None:
             return json.dumps({"ok": False, "message": "Image not found"})
 
         try:
             image_path.unlink()
-            return json.dumps({"ok": True, "message": f"Deleted image: {safe_name}"})
+            return json.dumps({"ok": True, "message": f"Deleted image: {image_path.name}"})
         except Exception as e:
             return json.dumps({"ok": False, "message": str(e)})
 

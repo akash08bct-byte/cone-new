@@ -84,12 +84,18 @@
                 <button id="btnLiveStop" class="action-btn secondary" disabled><span class="btn-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 7h10v10H7Z"></path></svg></span>Live Stop</button>
                 <button id="btnStartTraining" class="action-btn success"><span class="btn-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14l11-7Z"></path></svg></span>Start Capture</button>
                 <button id="btnStopTraining" class="action-btn danger" disabled><span class="btn-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 7h10v10H7Z"></path></svg></span>Stop Capture</button>
+                <button id="btnCollectUV" class="action-btn success" type="button" disabled>Collect UV Images</button>
               </div>
+              <p id="captureStatus" role="status">Ready to capture.</p>
 
               <div class="stats-grid">
                 <div class="stat-box">
-                  <span>Session</span>
-                  <strong id="sessionCount">0</strong>
+                  <span>White Field</span>
+                  <strong id="whiteCount">0</strong>
+                </div>
+                <div class="stat-box">
+                  <span>UV Light</span>
+                  <strong id="uvCount">0</strong>
                 </div>
                 <div class="stat-box">
                   <span>Total</span>
@@ -121,13 +127,19 @@
         <div class="job-modal-body">
           <label class="field-label" for="jobSelect">Choose Old Job ID</label>
           <select id="jobSelect" class="job-select">
-            <option value="">Saved jobs</option>
+            <option value="">Create new job</option>
           </select>
 
           <div class="modal-divider">or</div>
 
-          <label class="field-label" for="jobIdInput">Enter New Job ID</label>
-          <input id="jobIdInput" class="job-input" type="text" autocomplete="off" />
+          <label class="field-label" for="jobIdInput">Job ID</label>
+          <input id="jobIdInput" class="job-input" type="text" autocomplete="off" required />
+          <label class="field-label" for="whiteFieldName">White Field Name</label>
+          <input id="whiteFieldName" class="job-input" type="text" autocomplete="off" required />
+          <label class="field-label" for="uvLightName">UV Light Name</label>
+          <input id="uvLightName" class="job-input" type="text" autocomplete="off" required />
+          <p id="jobFolderHint" role="status" hidden></p>
+          <p id="jobError" role="alert" hidden></p>
         </div>
         <div class="job-modal-foot">
           <button id="btnJobCancel" class="small-btn" type="button">Cancel</button>
