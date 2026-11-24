@@ -294,6 +294,20 @@
         } else if (result === "board_connection") {
           alert("Check the board connection.");
         }
+
+        if (result && result !== "ok" && result !== "already_running") {
+          setRunButtonState(false);
+        }
+      }
+
+      function setRunButtonState(isRunning) {
+        const btnStart = document.getElementById("btnStart");
+        const btnStop = document.getElementById("btnStop");
+        const btnReset = document.getElementById("btnReset");
+
+        btnStart.disabled = isRunning;
+        btnStop.disabled = !isRunning;
+        btnReset.disabled = isRunning;
       }
 
       document.addEventListener("DOMContentLoaded", () => {
@@ -303,12 +317,28 @@
         const btnStop = document.getElementById("btnStop");
         const btnReset = document.getElementById("btnReset");
 
+        setRunButtonState(false);
+
         btnStart.addEventListener("click", () => {
+          setRunButtonState(true);
           if (bridge && bridge.startCamera) {
             const maybePromise = bridge.startCamera(handleStartResult);
-            if (maybePromise && typeof maybePromise.then === "function") {
-              maybePromise.then(handleStartResult);
+            if (typeof maybePromise === "string") {
+              handleStartResult(maybePromise);
+              if (maybePromise !== "ok" && maybePromise !== "already_running") {
+                setRunButtonState(false);
+              }
             }
+            if (maybePromise && typeof maybePromise.then === "function") {
+              maybePromise.then((result) => {
+                handleStartResult(result);
+                if (result !== "ok" && result !== "already_running") {
+                  setRunButtonState(false);
+                }
+              });
+            }
+          } else {
+            setRunButtonState(false);
           }
         });
 
@@ -316,12 +346,14 @@
           if (bridge && bridge.stopCamera) {
             bridge.stopCamera();
           }
+          setRunButtonState(false);
         });
 
         btnReset.addEventListener("click", () => {
           if (bridge && bridge.resetSystem) {
             bridge.resetSystem();
           }
+          setRunButtonState(false);
         });
       });
     </script>

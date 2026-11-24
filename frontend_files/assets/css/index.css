@@ -495,6 +495,18 @@ img[src=""] {
   box-shadow: 0 14px 26px rgba(18, 25, 38, 0.28);
 }
 
+.circle-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+  transform: none;
+  box-shadow: none;
+}
+
+.circle-btn:disabled:hover {
+  transform: none;
+  box-shadow: none;
+}
+
 .circle-btn.start {
   background: var(--ok);
 }

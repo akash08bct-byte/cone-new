@@ -17,6 +17,7 @@ from classes.pdf_compress import compress_pdf
 #     print("MindVision SDK not available. Camera functions will be disabled.")
 import time
 from classes.main import Process
+from classes.compare_tips import detect_thread_circle
 import json
 from classes.Plc_connection import *
 from pathlib import Path
@@ -123,6 +124,7 @@ class Bridge(QObject):
         self.timer.timeout.connect(self._grab_and_send_frame)
         self._shift_report_sent = set()
         self.is_running = False
+        self._last_cone_image_time = 0.0
         self.process = Process(
             set_exposure_cb=self._set_exposure_from_process,
             capture_frame_cb=self._capture_frame_for_process,
@@ -576,6 +578,19 @@ class Bridge(QObject):
 
             self.frame_signal.emit(b64)
             self._capture_training_frame(frame)
+
+            # Publish the processed thread/ring views while the Home live view
+            # is running.  The inspection worker also publishes these images,
+            # but it waits for PLC signals and is not active for a camera preview.
+            now = time.monotonic()
+            if now - self._last_cone_image_time >= 0.2:
+                self._last_cone_image_time = now
+                try:
+                    mask_full, ring_image, orad = detect_thread_circle(frame)
+                    thread_image = cv2.bitwise_and(frame, frame, mask=mask_full)
+                    self.send_cone_images(thread_image, ring_image, orad)
+                except Exception as e:
+                    print("Live cone image processing error:", e)
 
         except Exception as e:
             print("❌ Frame processing error:", e)
