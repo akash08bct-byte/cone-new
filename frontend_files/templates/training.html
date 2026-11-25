@@ -6,6 +6,8 @@
     <title>Cone Inspection Training</title>
     <link rel="stylesheet" href="../assets/css/index.css" />
     <link rel="stylesheet" href="../assets/css/training.css" />
+    <link rel="stylesheet" href="../assets/css/clock.css" />
+    <script src="../assets/js/clock.js" defer></script>
     <script src="qrc:///qtwebchannel/qwebchannel.js"></script>
   </head>
   <body>
@@ -13,7 +15,7 @@
       <header class="topbar">
         <div class="topbar-logo">
           <div class="logo-box">
-            <img src="../assets/logo/texa_logo.png" alt="Texa" />
+            <img src="../assets/logo/texa_logo.jpeg" alt="Texa" />
           </div>
         </div>
 
@@ -37,6 +39,11 @@
           <div class="machine_no_design">
             <span class="job-display-label">Machine No:</span>
             <span class="machine_number">Not configured</span>
+          </div>
+
+          <div class="dt-block">
+            <span id="dateValue" class="date">--/--/----</span>
+            <span id="timeValue" class="time">--:--:--</span>
           </div>
         </div>
       </header>
@@ -102,13 +109,21 @@
                 </div>
               </div>
 
+              <section class="retrain-panel" aria-labelledby="retrainTitle">
+                <label id="retrainTitle" class="field-label" for="retrainJob">Retrain Model</label>
+                <select id="retrainJob" class="job-select" disabled>
+                  <option value="">Select a Job ID</option>
+                </select>
+                <button id="btnRetrain" class="small-btn" type="button" disabled>Retrain</button>
+              </section>
+
               <div class="gallery-head d-none">
                 <strong>Training Images</strong>
               </div>
               <div id="gallery" class="gallery d-none">
                 <p>Select a job to view images.</p>
               </div>
-              <div class="gallery-actions">
+              <div class="gallery-actions d-none">
                 <button id="btnDeleteImage" class="small-btn danger" disabled>Delete</button>
               </div>
             </aside>
@@ -153,39 +168,37 @@
           <button id="btnCaptureModalClose" type="button" aria-label="Close">x</button>
         </div>
         <div class="capture-slider">
-          <button id="btnCapturePrev" class="slider-btn" type="button" aria-label="Previous image pair">
+          <button id="btnCapturePrev" class="slider-btn" type="button" aria-label="Previous image">
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 6-6 6 6 6"></path></svg>
           </button>
           <div class="capture-gallery">
-            <section class="capture-panel" aria-labelledby="captureWhiteTitle">
-              <header class="capture-panel-header">
-                <strong id="captureWhiteTitle">WHITE FIELD</strong>
-                <span id="captureWhiteFolder"></span>
+            <section class="capture-panel" aria-labelledby="captureLightTitle">
+              <header id="captureLightHeader" class="capture-panel-header">
+                <strong id="captureLightTitle">Collected image</strong>
+                <span id="captureLightFolder"></span>
               </header>
-              <div id="captureWhiteImage" class="capture-panel-image"></div>
-              <div id="captureWhiteFilename" class="capture-panel-filename"></div>
-            </section>
-            <section class="capture-panel" aria-labelledby="captureUVTitle">
-              <header class="capture-panel-header capture-panel-header-uv">
-                <strong id="captureUVTitle">UV LIGHT</strong>
-                <span id="captureUVFolder"></span>
-              </header>
-              <div id="captureUVImage" class="capture-panel-image"></div>
-              <div id="captureUVFilename" class="capture-panel-filename"></div>
+              <div id="captureSlideImage" class="capture-panel-image"></div>
+              <div class="capture-zoom" role="group" aria-label="Image zoom">
+                <button id="btnCaptureZoomOut" type="button" disabled>Zoom Out</button>
+                <button id="btnCaptureZoomIn" type="button" disabled>Zoom In</button>
+                <button id="btnCaptureZoomReset" type="button" disabled>Reset</button>
+                <output id="captureZoomLevel" aria-label="Zoom level">100%</output>
+              </div>
             </section>
           </div>
-          <button id="btnCaptureNext" class="slider-btn" type="button" aria-label="Next image pair">
+          <button id="btnCaptureNext" class="slider-btn" type="button" aria-label="Next image">
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 6 6 6-6 6"></path></svg>
           </button>
         </div>
         <div class="job-modal-foot">
-          <span id="captureCounter" class="capture-counter" aria-live="polite">Pair 0 / 0</span>
+          <span id="captureCounter" class="capture-counter" aria-live="polite">Image 0 / 0</span>
           <button id="btnCaptureDeleteImage" class="small-btn danger" type="button">Delete Image</button>
           <button id="btnCaptureTrainModel" class="small-btn success" type="button">Train Model</button>
         </div>
       </div>
     </div>
     <div class="toast" id="toast"></div>
+    <script src="../assets/js/storage.js"></script>
     <script src="../assets/js/training.js"></script>
   </body>
 </html>

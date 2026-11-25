@@ -12,10 +12,13 @@ let countTimer = null;
 let selectedImage = "";
 let galleryItems = [];
 let captureSlideIndex = 0;
+let captureZoomPercent = 100;
+let captureDrag = null;
 let captureSelectedImage = "";
 let captureFolders = {};
 let captureModalRevision = 0;
 let galleryRevision = 0;
+let modelTrainingRequest = false;
 
 function $(id) {
   return document.getElementById(id);
@@ -83,6 +86,9 @@ function setButtons() {
   $("jobIdInput").disabled = captureRequest;
   $("jobMaterial").disabled = captureRequest || jobLoading || jobBlocked;
   $("jobCount").disabled = captureRequest || jobLoading || jobBlocked;
+  const retrainJob = $("retrainJob");
+  retrainJob.disabled = sessionActive || captureRequest || modelTrainingRequest || retrainJob.options.length < 2;
+  $("btnRetrain").disabled = retrainJob.disabled || !retrainJob.value;
   document.querySelectorAll(".sidebar-btn").forEach((button) => {
     button.disabled = sessionActive || captureRequest;
   });
@@ -93,18 +99,20 @@ function currentJob() {
 }
 
 function ensureJobOption(jobId) {
-  const select = $("jobSelect");
   const safeJob = String(jobId || "").trim();
-  if (!safeJob || !select) return;
-
-  if (!Array.from(select.options).some((option) => option.value === safeJob)) {
-    const option = document.createElement("option");
-    option.value = safeJob;
-    option.textContent = safeJob;
-    select.appendChild(option);
+  if (!safeJob) return;
+  for (const id of ["jobSelect", "retrainJob"]) {
+    const select = $(id);
+    if (!Array.from(select.options).some((option) => option.value === safeJob)) {
+      const option = document.createElement("option");
+      option.value = safeJob;
+      option.textContent = safeJob;
+      select.appendChild(option);
+    }
   }
-
-  select.value = safeJob;
+  $("jobSelect").value = safeJob;
+  $("retrainJob").value = safeJob;
+  setButtons();
 }
 
 function openJobModal() {
@@ -333,6 +341,7 @@ async function refreshJobs() {
   const select = $("jobSelect");
   const current = activeJob;
   select.innerHTML = '<option value="">Create new job</option>';
+  $("retrainJob").innerHTML = '<option value="">Select a Job ID</option>';
 
   const b = await initBridge();
   if (!b || !b.training_job_options) return;
@@ -346,16 +355,9 @@ async function refreshJobs() {
       if (jobId) jobs.add(jobId);
     });
 
-    jobs.forEach((jobId) => {
-      const option = document.createElement("option");
-      option.value = jobId;
-      option.textContent = jobId;
-      select.appendChild(option);
-    });
-
-    if (current && Array.from(select.options).some((option) => option.value === current)) {
-      select.value = current;
-    }
+    jobs.forEach(ensureJobOption);
+    select.value = current || "";
+    $("retrainJob").value = current || "";
   } catch (error) {
     console.error("Job refresh failed:", error);
   }
@@ -503,6 +505,7 @@ async function imageDataFor(jobId, filename) {
 
 function closeCaptureModal() {
   captureModalRevision += 1;
+  stopCaptureDrag();
   const modal = $("captureModal");
   modal.classList.remove("open");
   modal.setAttribute("aria-hidden", "true");
@@ -515,55 +518,103 @@ function captureSlides() {
     const light = folder && Object.keys(captureFolders).find((kind) => captureFolders[kind] === folder);
     return light ? { ...item, light } : item;
   });
-  return groupTrainingImages(items.filter((item) => item.light === "white" || item.light === "uv"));
+  return ["white", "uv"].flatMap((light) => items.filter((item) => item.light === light)
+    .sort((a, b) => a.filename.localeCompare(b.filename, undefined, { numeric: true })));
 }
 
 function renderCaptureSlide(jobId = currentJob()) {
   const slides = captureSlides();
   const total = slides.length;
   captureSlideIndex = Math.max(0, Math.min(captureSlideIndex, total - 1));
-  $("captureCounter").textContent = `Pair ${total ? captureSlideIndex + 1 : 0} / ${total}`;
+  const item = slides[captureSlideIndex];
+  captureSelectedImage = item?.filename || "";
+  $("captureCounter").textContent = `Image ${total ? captureSlideIndex + 1 : 0} / ${total}`;
   $("btnCapturePrev").disabled = captureSlideIndex <= 0;
   $("btnCaptureNext").disabled = captureSlideIndex >= total - 1;
-  $("btnCaptureDeleteImage").disabled = !jobId || !total;
-  const slide = slides[captureSlideIndex] || [];
-  if (!slide.some((item) => item && item.filename === captureSelectedImage)) {
-    captureSelectedImage = slide.find(Boolean)?.filename || "";
+  $("btnCaptureDeleteImage").disabled = !jobId || !item;
+  const isUV = item?.light === "uv";
+  $("captureLightHeader").classList.toggle("capture-panel-header-uv", isUV);
+  $("captureLightTitle").textContent = item ? (isUV ? "UV LIGHT" : "WHITE FIELD") : "Collected image";
+  const folder = item ? item.filename.split("/").slice(0, -1).join("/") : "";
+  $("captureLightFolder").textContent = item ? captureFolders[item.light] || folder : "";
+  const viewport = $("captureSlideImage");
+  stopCaptureDrag();
+  viewport.innerHTML = "";
+  if (!item) {
+    const placeholder = document.createElement("p");
+    placeholder.textContent = "No images found for this job.";
+    viewport.appendChild(placeholder);
+    setCaptureZoom(100);
+    return;
   }
+  const img = document.createElement("img");
+  img.className = "capture-image";
+  img.draggable = false;
+  loadTrainingPreview(img, jobId, item);
+  img.alt = isUV ? "UV Light image" : "White Field image";
+  viewport.appendChild(img);
+  setCaptureZoom(100);
+}
 
-  for (const [index, light, panel, label] of [
-    [0, "white", "captureWhite", "White Field"],
-    [1, "uv", "captureUV", "UV Light"],
-  ]) {
-    const item = slide[index];
-    const folderPath = galleryItems.find((entry) => entry.light === light)?.filename;
-    $(panel + "Folder").textContent = captureFolders[light]
-      || (folderPath ? folderPath.slice(0, folderPath.lastIndexOf("/")) : "") || "Folder unavailable";
-    $(panel + "Filename").textContent = item ? item.filename.split("/").pop() : "—";
-    const viewport = $(panel + "Image");
-    viewport.innerHTML = "";
-    if (!item) {
-      const placeholder = document.createElement("p");
-      placeholder.textContent = `No ${label} image for this ${total ? "pair" : "job"}.`;
-      viewport.appendChild(placeholder);
-      continue;
-    }
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = "capture-image-option";
-    button.setAttribute("aria-pressed", String(item.filename === captureSelectedImage));
-    const img = document.createElement("img");
-    img.className = "capture-image";
-    loadTrainingPreview(img, jobId, item);
-    button.appendChild(img);
-    button.addEventListener("click", () => {
-      captureSelectedImage = item.filename;
-      $("captureModal").querySelectorAll(".capture-image-option").forEach((option) => {
-        option.setAttribute("aria-pressed", String(option === button));
-      });
-    });
-    viewport.appendChild(button);
+function setCaptureZoom(percent, pointer) {
+  const viewport = $("captureSlideImage");
+  const image = viewport.querySelector(".capture-image");
+  const zoom = image ? Math.max(100, Math.min(300, percent)) : 100;
+  if (image) {
+    const anchorX = pointer ? pointer.x : viewport.clientWidth / 2;
+    const anchorY = pointer ? pointer.y : viewport.clientHeight / 2;
+    const x = (viewport.scrollLeft + anchorX) / Math.max(1, image.clientWidth);
+    const y = (viewport.scrollTop + anchorY) / Math.max(1, image.clientHeight);
+    image.style.width = `${zoom}%`;
+    image.style.height = `${zoom}%`;
+    viewport.scrollLeft = zoom === 100 ? 0 : x * image.clientWidth - anchorX;
+    viewport.scrollTop = zoom === 100 ? 0 : y * image.clientHeight - anchorY;
   }
+  captureZoomPercent = zoom;
+  viewport.classList.toggle("zoomed", zoom > 100);
+  if (zoom === 100) stopCaptureDrag();
+  $("captureZoomLevel").textContent = `${zoom}%`;
+  $("btnCaptureZoomOut").disabled = zoom === 100;
+  $("btnCaptureZoomIn").disabled = !image || zoom === 300;
+  $("btnCaptureZoomReset").disabled = zoom === 100;
+}
+
+function zoomCaptureWithWheel(event) {
+  const viewport = event.currentTarget;
+  if (!event.deltaY || !viewport.querySelector(".capture-image")) return;
+  event.preventDefault();
+  const bounds = viewport.getBoundingClientRect();
+  setCaptureZoom(captureZoomPercent - Math.sign(event.deltaY) * 25, {
+    x: event.clientX - bounds.left,
+    y: event.clientY - bounds.top,
+  });
+}
+
+function startCaptureDrag(event) {
+  if (event.button !== 0 || captureZoomPercent <= 100 || captureDrag) return;
+  const viewport = event.currentTarget;
+  viewport.setPointerCapture(event.pointerId);
+  viewport.classList.add("dragging");
+  captureDrag = { pointerId: event.pointerId, x: event.clientX, y: event.clientY };
+  event.preventDefault();
+}
+
+function moveCaptureDrag(event) {
+  if (captureDrag?.pointerId !== event.pointerId) return;
+  const viewport = event.currentTarget;
+  viewport.scrollLeft += captureDrag.x - event.clientX;
+  viewport.scrollTop += captureDrag.y - event.clientY;
+  captureDrag.x = event.clientX;
+  captureDrag.y = event.clientY;
+}
+
+function stopCaptureDrag(event) {
+  if (!captureDrag || (event && captureDrag.pointerId !== event.pointerId)) return;
+  const viewport = $("captureSlideImage");
+  const { pointerId } = captureDrag;
+  captureDrag = null;
+  viewport.classList.remove("dragging");
+  if (viewport.hasPointerCapture(pointerId)) viewport.releasePointerCapture(pointerId);
 }
 
 async function openCaptureModal(jobId = currentJob()) {
@@ -637,22 +688,25 @@ async function deleteSelectedImage() {
   await refreshCounts(job);
 }
 
-async function trainModel() {
-  const job = currentJob();
+async function trainModel(job = currentJob()) {
+  if (modelTrainingRequest) return;
   if (!job) {
     toast("Select a Job ID");
     return;
   }
 
-  const b = await initBridge();
-  if (!b || !b.startModelTraining) {
-    toast("Model training is not available");
-    return;
+  modelTrainingRequest = true;
+  setButtons();
+  try {
+    const raw = await callBridge("startModelTraining", job);
+    const data = JSON.parse(raw || "{}");
+    toast(data.message || (data.ok ? "Model training request sent" : "Model training is not available"));
+  } catch (error) {
+    toast("Unable to start model training.");
+  } finally {
+    modelTrainingRequest = false;
+    setButtons();
   }
-
-  const raw = await callBridge("startModelTraining", job);
-  const data = JSON.parse(raw || "{}");
-  toast(data.message || "Model training request sent");
 }
 
 function openHomePage() {
@@ -676,7 +730,7 @@ function openSettingPage() {
 }
 
 window.addEventListener("load", async () => {
-  await initBridge();
+  startStorageIndicator(await initBridge());
   await refreshCounts();
   await refreshJobs();
   setButtons();
@@ -686,10 +740,22 @@ window.addEventListener("load", async () => {
   $("btnStartTraining").addEventListener("click", startTraining);
   $("btnStopTraining").addEventListener("click", () => changeCaptureStage("stopTraining"));
   $("btnDeleteImage").addEventListener("click", deleteSelectedImage);
-  $("btnCaptureTrainModel").addEventListener("click", trainModel);
+  $("btnCaptureTrainModel").addEventListener("click", () => trainModel());
+  $("retrainJob").addEventListener("change", setButtons);
+  $("btnRetrain").addEventListener("click", () => trainModel($("retrainJob").value));
   $("btnCaptureModalClose").addEventListener("click", closeCaptureModal);
   $("btnCapturePrev").addEventListener("click", showPreviousCaptureImage);
   $("btnCaptureNext").addEventListener("click", showNextCaptureImage);
+  $("btnCaptureZoomOut").addEventListener("click", () => setCaptureZoom(captureZoomPercent - 25));
+  $("btnCaptureZoomIn").addEventListener("click", () => setCaptureZoom(captureZoomPercent + 25));
+  $("btnCaptureZoomReset").addEventListener("click", () => setCaptureZoom(100));
+  const captureViewport = $("captureSlideImage");
+  captureViewport.addEventListener("wheel", zoomCaptureWithWheel, { passive: false });
+  captureViewport.addEventListener("pointerdown", startCaptureDrag);
+  captureViewport.addEventListener("pointermove", moveCaptureDrag);
+  captureViewport.addEventListener("pointerup", stopCaptureDrag);
+  captureViewport.addEventListener("pointercancel", stopCaptureDrag);
+  captureViewport.addEventListener("lostpointercapture", stopCaptureDrag);
   $("btnCaptureDeleteImage").addEventListener("click", deleteCurrentCaptureImage);
   $("captureModal").addEventListener("click", (event) => {
     if (event.target === $("captureModal")) closeCaptureModal();

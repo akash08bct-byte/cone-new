@@ -10,6 +10,8 @@
     <link rel="stylesheet" href="../assets/css/controller.css">
     <link rel="stylesheet" href="../assets/css/model.css">
 
+    <link rel="stylesheet" href="../assets/css/clock.css" />
+    <script src="../assets/js/clock.js" defer></script>
     <script src="qrc:///qtwebchannel/qwebchannel.js"></script>
 
     <style>
@@ -256,6 +258,11 @@
         <div class="card filters-card">
             <div class="filters-grid">
                 <div style="font-size:18px; font-weight:800;">Reports</div>
+
+                <div class="dt-block dt-block-light">
+                  <span id="dateValue" class="date">--/--/----</span>
+                  <span id="timeValue" class="time">--:--:--</span>
+                </div>
                 <div style="display:flex; flex-direction:column; align-items:flex-start;">
   <button class="btn ghost" id="btnDownloadPDF">Download PDF</button>
 

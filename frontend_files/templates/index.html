@@ -5,6 +5,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Cone Inspection UI</title>
     <link rel="stylesheet" href="../assets/css/index.css" />
+    <link rel="stylesheet" href="../assets/css/clock.css" />
+    <script src="../assets/js/clock.js" defer></script>
     <script src="qrc:///qtwebchannel/qwebchannel.js"></script>
   </head>
 
@@ -13,7 +15,7 @@
       <header class="topbar">
         <div class="topbar-logo">
           <div class="logo-box">
-            <img src="../assets/logo/texa_logo.png" alt="Texa" />
+            <img src="../assets/logo/texa_logo.jpeg" alt="Texa" />
           </div>
         </div>
 
@@ -152,6 +154,7 @@
     </div>
     <div class="toast" id="toast"></div>
 
+    <script src="../assets/js/storage.js"></script>
     <script>
       let bridge = null;
       let lastUpdate = 0;
@@ -190,8 +193,7 @@
             return;
           }
 
-          refreshStorage();
-          setInterval(refreshStorage, 30000);
+          startStorageIndicator(bridge);
 
           bridge.frame_signal.connect(function (base64Data) {
             const now = Date.now();
@@ -234,41 +236,6 @@
       function openTraining() {
         if (bridge && bridge.showTraining) bridge.showTraining();
         else openController();
-      }
-
-      function formatStorageSize(bytes) {
-        const gb = Number(bytes || 0) / (1024 * 1024 * 1024);
-        return gb >= 10 ? Math.round(gb) + " GB" : gb.toFixed(1) + " GB";
-      }
-
-      function updateStorageUI(data) {
-        const pctEl = document.getElementById("storagePct");
-        const fillEl = document.getElementById("storageBarFill");
-        const box = document.getElementById("storageIndicator");
-        if (!pctEl || !fillEl) return;
-
-        const usedPct = Math.max(0, Math.min(100, Number(data.used_percent || 0)));
-        pctEl.textContent = Math.round(usedPct) + "%";
-        fillEl.style.width = usedPct + "%";
-
-        if (box) {
-          box.title =
-            "Laptop storage: " +
-            formatStorageSize(data.free) +
-            " free of " +
-            formatStorageSize(data.total);
-        }
-      }
-
-      function refreshStorage() {
-        if (!bridge || !bridge.getStorageStatus) return;
-        bridge.getStorageStatus(function (raw) {
-          try {
-            updateStorageUI(JSON.parse(raw || "{}"));
-          } catch (e) {
-            console.error("Storage status failed:", e);
-          }
-        });
       }
 
       function handleStartResult(result) {

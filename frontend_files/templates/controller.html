@@ -8,6 +8,8 @@
   <link rel="stylesheet" href="../assets/css/index.css">
   <link rel="stylesheet" href="../assets/css/controller.css">
   <link rel="stylesheet" href="../assets/css/model.css">
+  <link rel="stylesheet" href="../assets/css/clock.css" />
+  <script src="../assets/js/clock.js" defer></script>
   <script src="qrc:///qtwebchannel/qwebchannel.js"></script>
   
 </head>
@@ -17,7 +19,7 @@
     <header class="topbar">
       <div class="topbar-logo">
         <div class="logo-box">
-          <img src="../assets/logo/texa_logo.png" alt="Texa" />
+          <img src="../assets/logo/texa_logo.jpeg" alt="Texa" />
         </div>
       </div>
 
@@ -41,6 +43,11 @@
         <div class="machine_no_design">
           <span class="job-display-label">Machine No:</span>
           <span class="machine_number">Not configured</span>
+        </div>
+
+        <div class="dt-block">
+          <span id="dateValue" class="date">--/--/----</span>
+          <span id="timeValue" class="time">--:--:--</span>
         </div>
       </div>
     </header>
