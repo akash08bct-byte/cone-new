@@ -12,6 +12,7 @@ let countTimer = null;
 let selectedImage = "";
 let galleryItems = [];
 let captureSlideIndex = 0;
+let captureReviewLight = "white";
 let captureZoomPercent = 100;
 let captureDrag = null;
 let captureSelectedImage = "";
@@ -511,15 +512,15 @@ function closeCaptureModal() {
   modal.setAttribute("aria-hidden", "true");
 }
 
-function captureSlides() {
+function captureSlides(reviewLight = captureReviewLight) {
   const items = galleryItems.map((item) => {
     const separator = item.filename.lastIndexOf("/");
     const folder = separator < 0 ? "" : item.filename.slice(0, separator);
     const light = folder && Object.keys(captureFolders).find((kind) => captureFolders[kind] === folder);
     return light ? { ...item, light } : item;
   });
-  return ["white", "uv"].flatMap((light) => items.filter((item) => item.light === light)
-    .sort((a, b) => a.filename.localeCompare(b.filename, undefined, { numeric: true })));
+  return items.filter((item) => item.light === reviewLight)
+    .sort((a, b) => a.filename.localeCompare(b.filename, undefined, { numeric: true }));
 }
 
 function renderCaptureSlide(jobId = currentJob()) {
@@ -531,18 +532,23 @@ function renderCaptureSlide(jobId = currentJob()) {
   $("captureCounter").textContent = `Image ${total ? captureSlideIndex + 1 : 0} / ${total}`;
   $("btnCapturePrev").disabled = captureSlideIndex <= 0;
   $("btnCaptureNext").disabled = captureSlideIndex >= total - 1;
+  const isUV = captureReviewLight === "uv";
   $("btnCaptureDeleteImage").disabled = !jobId || !item;
-  const isUV = item?.light === "uv";
+  $("btnCaptureNextStep").hidden = isUV;
+  $("btnCaptureNextStep").disabled = !jobId;
+  $("btnCaptureBackStep").hidden = !isUV;
+  $("btnCaptureTrainModel").hidden = !isUV;
+  $("btnCaptureTrainModel").disabled = !jobId || !item;
   $("captureLightHeader").classList.toggle("capture-panel-header-uv", isUV);
-  $("captureLightTitle").textContent = item ? (isUV ? "UV LIGHT" : "WHITE FIELD") : "Collected image";
+  $("captureLightTitle").textContent = isUV ? "UV LIGHT" : "WHITE FIELD";
   const folder = item ? item.filename.split("/").slice(0, -1).join("/") : "";
-  $("captureLightFolder").textContent = item ? captureFolders[item.light] || folder : "";
+  $("captureLightFolder").textContent = captureFolders[captureReviewLight] || folder;
   const viewport = $("captureSlideImage");
   stopCaptureDrag();
   viewport.innerHTML = "";
   if (!item) {
     const placeholder = document.createElement("p");
-    placeholder.textContent = "No images found for this job.";
+    placeholder.textContent = isUV ? "No UV Light images for this job." : "No White Field images for this job.";
     viewport.appendChild(placeholder);
     setCaptureZoom(100);
     return;
@@ -620,7 +626,7 @@ function stopCaptureDrag(event) {
 async function openCaptureModal(jobId = currentJob()) {
   const revision = ++captureModalRevision;
   const modal = $("captureModal");
-  $("btnCaptureTrainModel").disabled = !jobId;
+  captureReviewLight = "white";
   captureSlideIndex = 0;
   captureSelectedImage = "";
   captureFolders = {};
@@ -649,6 +655,14 @@ function showPreviousCaptureImage() {
 function showNextCaptureImage() {
   if (captureSlideIndex >= captureSlides().length - 1) return;
   captureSlideIndex += 1;
+  renderCaptureSlide();
+}
+
+function showCaptureReview(light) {
+  const filename = captureSelectedImage.split("/").pop();
+  captureReviewLight = light;
+  const matchingIndex = captureSlides().findIndex((item) => item.filename.split("/").pop() === filename);
+  captureSlideIndex = Math.max(0, matchingIndex);
   renderCaptureSlide();
 }
 
@@ -741,6 +755,8 @@ window.addEventListener("load", async () => {
   $("btnStopTraining").addEventListener("click", () => changeCaptureStage("stopTraining"));
   $("btnDeleteImage").addEventListener("click", deleteSelectedImage);
   $("btnCaptureTrainModel").addEventListener("click", () => trainModel());
+  $("btnCaptureBackStep").addEventListener("click", () => showCaptureReview("white"));
+  $("btnCaptureNextStep").addEventListener("click", () => showCaptureReview("uv"));
   $("retrainJob").addEventListener("change", setButtons);
   $("btnRetrain").addEventListener("click", () => trainModel($("retrainJob").value));
   $("btnCaptureModalClose").addEventListener("click", closeCaptureModal);
