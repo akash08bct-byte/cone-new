@@ -164,38 +164,48 @@
     <div class="modal-overlay" id="captureModal" aria-hidden="true">
       <div class="job-modal capture-modal" role="dialog" aria-modal="true" aria-labelledby="captureModalTitle">
         <div class="job-modal-head">
-          <strong id="captureModalTitle">Collected Images</strong>
+          <strong id="captureModalTitle">Collected Images &middot; <span id="captureLightTitle">White Field</span></strong>
           <button id="btnCaptureModalClose" type="button" aria-label="Close">x</button>
         </div>
-        <div class="capture-slider">
-          <button id="btnCapturePrev" class="slider-btn" type="button" aria-label="Previous image">
-            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 6-6 6 6 6"></path></svg>
-          </button>
-          <div class="capture-gallery">
-            <section class="capture-panel" aria-labelledby="captureLightTitle">
-              <header id="captureLightHeader" class="capture-panel-header">
-                <strong id="captureLightTitle">Collected image</strong>
-                <span id="captureLightFolder"></span>
+        <div id="captureReviewList" class="capture-gallery" aria-label="Collected images"></div>
+        <template id="captureReviewTemplate">
+          <div class="capture-review-slide">
+            <section class="capture-panel" aria-label="White Field image">
+              <header class="capture-panel-header">
+                <span class="capture-folder"></span>
               </header>
-              <div id="captureSlideImage" class="capture-panel-image"></div>
-              <div class="capture-zoom" role="group" aria-label="Image zoom">
-                <button id="btnCaptureZoomOut" type="button" disabled>Zoom Out</button>
-                <button id="btnCaptureZoomIn" type="button" disabled>Zoom In</button>
-                <button id="btnCaptureZoomReset" type="button" disabled>Reset</button>
-                <output id="captureZoomLevel" aria-label="Zoom level">100%</output>
-              </div>
+              <div class="capture-panel-image"></div>
             </section>
           </div>
-          <button id="btnCaptureNext" class="slider-btn" type="button" aria-label="Next image">
-            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 6 6 6-6 6"></path></svg>
-          </button>
-        </div>
-        <div class="job-modal-foot">
-          <span id="captureCounter" class="capture-counter" aria-live="polite">Image 0 / 0</span>
-          <button id="btnCaptureBackStep" class="small-btn" type="button" hidden>Back</button>
-          <button id="btnCaptureDeleteImage" class="small-btn danger" type="button">Delete Image</button>
-          <button id="btnCaptureNextStep" class="small-btn" type="button">Next</button>
-          <button id="btnCaptureTrainModel" class="small-btn success" type="button" hidden>Train Model</button>
+        </template>
+        <div class="job-modal-foot capture-modal-foot">
+          <div class="capture-footer-nav">
+            <button id="btnCapturePrev" class="slider-btn" type="button" aria-label="Previous image">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 6-6 6 6 6"></path></svg>
+            </button>
+            <button id="btnCaptureNext" class="slider-btn" type="button" aria-label="Next image">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 6 6 6-6 6"></path></svg>
+            </button>
+            <span id="captureCounter" class="capture-counter" aria-live="polite">Image 0 / 0</span>
+          </div>
+          <div id="captureZoom" class="capture-zoom" role="group" aria-label="Image zoom">
+            <button data-zoom="-25" type="button" aria-label="Zoom out" title="Zoom out">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5" /><path d="m15 15 5 5M8 10.5h5" /></svg>
+            </button>
+            <button data-zoom="25" type="button" aria-label="Zoom in" title="Zoom in">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5" /><path d="m15 15 5 5M8 10.5h5m-2.5-2.5v5" /></svg>
+            </button>
+            <button data-zoom="reset" type="button" aria-label="Reset zoom" title="Reset zoom">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 11a8 8 0 1 1 2.2 6.5M4 5v6h6" /></svg>
+            </button>
+            <output aria-label="Zoom level">100%</output>
+          </div>
+          <div class="capture-footer-actions">
+            <button id="btnCaptureBackStep" class="small-btn" type="button" hidden>Back</button>
+            <button id="btnCaptureDeleteImage" class="small-btn danger" type="button">Delete Image</button>
+            <button id="btnCaptureNextStep" class="small-btn" type="button">Next</button>
+            <button id="btnCaptureTrainModel" class="small-btn success" type="button" hidden>Train Model</button>
+          </div>
         </div>
       </div>
     </div>
