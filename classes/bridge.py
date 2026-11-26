@@ -1,6 +1,6 @@
 import json
 from pathlib import Path
-from PyQt5.QtCore import QObject, pyqtSlot, pyqtSignal, QThread, QTimer
+from PyQt5.QtCore import QObject, pyqtSlot, pyqtSignal, QThread, QTimer, QUrl
 import time
 import threading
 import cv2
@@ -156,8 +156,8 @@ class Bridge(QObject):
         self.uv_light_process = False
         self.training_trigger = threading.Event()
         self.active_job_id = ""
-        self.white_count = 0
-        self.uv_count = 0
+        self.session_white_count = 0
+        self.session_uv_count = 0
         self.job_id = None
 
         self.timer = QTimer(self)
@@ -172,21 +172,24 @@ class Bridge(QObject):
             self.uv_light_signal = uv_light_signal()
 
             if self.training_start:
+                if not self.white_light_signal:
+                    self.white_light_process = False
+                if not self.uv_light_signal:
+                    self.uv_light_process = False
 
+                frame = self.cam_worker.latest_frame if self.cam_worker else None
                 if self.white_light_signal and not self.white_light_process:
-                    self.training_trigger.set()
-                    self.white_count +=1
-                    self.save_training_images(self.cam_worker.latest_frame,self.job_id,"top_white")
-                    self.white_light_process = True
+                    if self.save_training_images(frame, self.job_id, "top_white", self.session_white_count + 1):
+                        self.training_trigger.set()
+                        self.session_white_count += 1
+                        self.white_light_process = True
                 elif self.uv_light_signal and not self.uv_light_process:
-                    self.training_trigger.set()
-                    self.uv_count +=1
-                    self.save_training_images(self.cam_worker.latest_frame,self.job_id,"top_uv")
-                    self.uv_light_process = True
+                    if self.save_training_images(frame, self.job_id, "top_uv", self.session_uv_count + 1):
+                        self.training_trigger.set()
+                        self.session_uv_count += 1
+                        self.uv_light_process = True
                 else:
                     self.training_trigger.clear()
-                    self.white_light_process = False
-                    self.uv_light_process = False
 
             else:
                 self.training_trigger.clear()
@@ -197,16 +200,114 @@ class Bridge(QObject):
             self.training_trigger.clear()
             error_log("PLC Connection Check", e)
 
-    def save_training_images(self,image,job_id,postion):
-        if postion == "top_white":
-            img_path = TRAINING_IMG / f"{job_id}/{postion}"
-            img_path.mkdir(parents=True, exist_ok=True)
-            cv2.imwrite(f"{img_path}/{postion}.bmp",image)
-        elif postion == "top_uv":
-            img_path = TRAINING_IMG / f"{job_id}/{postion}"
-            img_path.mkdir(parents=True, exist_ok=True)
-            cv2.imwrite(f"{img_path}/{postion}.bmp",image)
+    def save_training_images(self, image, job_id, position, sequence):
+        if image is None or image.size == 0:
+            return False
+        folder = TRAINING_IMG / job_id / position
+        folder.mkdir(parents=True, exist_ok=True)
+        filename = f"{self.capture_session_id}_{sequence:06d}.bmp"
+        return cv2.imwrite(str(folder / filename), image)
 
+
+    @pyqtSlot(result=str)
+    def training_job_options(self):
+        try:
+            jobs = sorted(folder.name for folder in TRAINING_IMG.iterdir() if folder.is_dir())
+        except FileNotFoundError:
+            return j([])
+        except OSError as exc:
+            error_log("Training job folders", exc)
+            return j([])
+
+        return j([{"job_id": job} for job in jobs])
+
+    def _saved_training_job(self, job_id):
+        root = TRAINING_IMG.resolve()
+        job = root / job_id
+        if job.parent != root or job.resolve() != job or not job.is_dir():
+            raise ValueError("The selected training job folder could not be found.")
+        return job
+
+    @pyqtSlot(str, result=str)
+    def getTrainingJobFolders(self, job_id):
+        try:
+            job = self._saved_training_job(job_id)
+            parts = job.name.rsplit("_", 2)
+            material, count = parts[1:] if len(parts) == 3 else ("", "")
+            return j({"ok": True, "material": material, "count": count})
+        except (OSError, ValueError, RuntimeError) as exc:
+            return j({"ok": False, "message": str(exc)})
+
+    def _training_images(self, job):
+        light_by_folder = {
+            "top_white": "white", "white_field_white": "white",
+            "top_uv": "uv", "uv_light_uv": "uv",
+        }
+        for folder in sorted(job.iterdir()):
+            light = light_by_folder.get(folder.name.lower())
+            if not light or not folder.is_dir() or folder.resolve() != folder:
+                continue
+            for image in sorted(folder.iterdir()):
+                if image.suffix.lower() in {".bmp", ".jpg", ".jpeg", ".png", ".webp"}:
+                    if image.is_file() and image.resolve() == image:
+                        yield image, light
+
+    def _training_job_totals(self, job_id):
+        counts = {"white": 0, "uv": 0}
+        if job_id:
+            try:
+                job = self._saved_training_job(job_id)
+            except ValueError:
+                return counts
+            for _, light in self._training_images(job):
+                counts[light] += 1
+        return counts
+
+    @pyqtSlot(str, result=str)
+    def getTrainingCaptureStatus(self, job_id):
+        job_id = job_id or self.active_job_id
+        capturing = self.training_start and job_id == self.active_job_id
+        try:
+            return j({
+                "ok": True,
+                "job_id": job_id,
+                "stage": "capturing" if capturing else "idle",
+                "phase": "waiting" if capturing else "",
+                "job_totals": self._training_job_totals(job_id),
+            })
+        except (OSError, RuntimeError) as exc:
+            error_log("Training image counts", exc)
+            return j({"ok": False})
+
+    @pyqtSlot(str, result=str)
+    def getTrainingImageItems(self, job_id):
+        try:
+            job = self._saved_training_job(job_id)
+            items = [
+                {
+                    "filename": image.relative_to(job).as_posix(),
+                    "light": light,
+                    "url": QUrl.fromLocalFile(str(image)).toString(),
+                }
+                for image, light in self._training_images(job)
+            ]
+            return j({"ok": True, "items": items})
+        except (OSError, ValueError, RuntimeError) as exc:
+            error_log("Training job images", exc)
+            return j({"ok": False, "items": []})
+
+    @pyqtSlot(str, str, result=str)
+    def deleteTrainingImage(self, job_id, filename):
+        try:
+            job = self._saved_training_job(job_id)
+            for image, _ in self._training_images(job):
+                if image.relative_to(job).as_posix() == filename:
+                    image.unlink()
+                    return j({"ok": True, "message": "Image deleted."})
+            return j({"ok": False, "message": "The selected image was not found."})
+        except (OSError, ValueError, RuntimeError) as exc:
+            error_log("Delete training image", exc)
+            return j({"ok": False, "message": "Unable to delete the selected image."})
 
     @pyqtSlot(result=str)
     def startCamera(self):
@@ -270,9 +371,12 @@ class Bridge(QObject):
                     "message": "Camera is already running."
                 })
 
-            self.active_job_id = job
-            self.white_count = 0
-            self.uv_count = 0
+            self.active_job_id = self.job_id
+            self.capture_session_id = time.time_ns()
+            self.session_white_count = 0
+            self.session_uv_count = 0
+            self.white_light_process = False
+            self.uv_light_process = False
 
             self.training_trigger.clear()
 
@@ -305,9 +409,8 @@ class Bridge(QObject):
                 "ok": True,
                 "stage": "capturing",
                 "phase": "waiting",
-                "job_id": job,
-                "white_count": self.white_count,
-                "uv_count": self.uv_count,
+                "job_id": self.active_job_id,
+                "job_totals": self._training_job_totals(self.active_job_id),
                 "message": "Waiting for PLC trigger."
             })
 
@@ -359,8 +462,7 @@ class Bridge(QObject):
                 "stage": "completed",
                 "phase": "closing",
                 "job_id": self.active_job_id,
-                "white_count": self.white_count,
-                "uv_count": self.uv_count,
+                "job_totals": self._training_job_totals(self.active_job_id),
                 "message": "Training capture stopped successfully."
             })
 
@@ -490,4 +592,3 @@ class Bridge(QObject):
     @pyqtSlot()
     def showSetting(self):
         self.main_window.load_page(SETTINGS_PAGE)
-   

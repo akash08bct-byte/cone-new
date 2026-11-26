@@ -9,6 +9,7 @@ let jobLoading = false;
 let jobBlocked = false;
 let activeJob = "";
 let countTimer = null;
+let countRevision = 0;
 let selectedImage = "";
 let galleryItems = [];
 let captureSlideIndex = 0;
@@ -19,6 +20,9 @@ let captureDrag = null;
 let captureSelectedImage = "";
 let captureFolders = {};
 let captureModalRevision = 0;
+let captureModalJob = "";
+let captureDeleteRevision = null;
+let retrainReviewItems = null;
 let galleryRevision = 0;
 let modelTrainingRequest = false;
 
@@ -97,7 +101,7 @@ function setButtons() {
   $("jobCount").disabled = captureRequest || jobLoading || jobBlocked;
   const retrainJob = $("retrainJob");
   retrainJob.disabled = sessionActive || captureRequest || modelTrainingRequest || retrainJob.options.length < 2;
-  $("btnRetrain").disabled = retrainJob.disabled || !retrainJob.value;
+  $("btnViewRetrainImages").disabled = retrainJob.disabled || !retrainJob.value;
   document.querySelectorAll(".sidebar-btn").forEach((button) => {
     button.disabled = sessionActive || captureRequest;
   });
@@ -189,11 +193,13 @@ function setSelectedJob(jobId) {
 
 async function refreshCounts(jobId = currentJob(), lookupRevision = jobLookupRevision) {
   if (captureRequest || !bridge) return;
+  const request = ++countRevision;
   const revision = captureRevision;
   try {
     const raw = await callBridge("getTrainingCaptureStatus", jobId);
     const data = JSON.parse(raw || "{}");
-    if (data.ok && revision === captureRevision && lookupRevision === jobLookupRevision && !captureRequest) {
+    if (data.ok && request === countRevision && revision === captureRevision &&
+        lookupRevision === jobLookupRevision && !captureRequest) {
       applyCaptureStatus(data);
     }
   } catch (error) {
@@ -213,8 +219,8 @@ function applyCaptureStatus(data) {
         setSelectedJob(data.job_id);
     }
 
-    const whiteCount = Number(data.white_count || 0);
-    const uvCount = Number(data.uv_count || 0);
+    const whiteCount = Number(data.job_totals?.white ?? 0);
+    const uvCount = Number(data.job_totals?.uv ?? 0);
 
     const counts = [
         ["whiteCount", whiteCount],
@@ -622,8 +628,8 @@ function closeCaptureModal() {
   modal.setAttribute("aria-hidden", "true");
 }
 
-function renderCaptureSlide(jobId = currentJob()) {
-  const items = galleryItems.map((item) => {
+function renderCaptureSlide(jobId = captureModalJob) {
+  const items = (retrainReviewItems ?? galleryItems).map((item) => {
     const folder = item.filename.slice(0, item.filename.lastIndexOf("/"));
     const light = ["white", "uv"].find((kind) => captureFolders[kind] && captureFolders[kind] === folder);
     return light ? { ...item, light } : item;
@@ -633,7 +639,7 @@ function renderCaptureSlide(jobId = currentJob()) {
   selectCaptureImage(captureSlideIndex, jobId);
 }
 
-function selectCaptureImage(index, jobId = currentJob()) {
+function selectCaptureImage(index, jobId = captureModalJob) {
   const gallery = $("captureReviewList");
   const total = captureReviewImages.length;
   const nextIndex = Math.max(0, Math.min(index, total - 1));
@@ -641,7 +647,8 @@ function selectCaptureImage(index, jobId = currentJob()) {
   const item = captureReviewImages[nextIndex];
   captureSelectedImage = item?.filename || "";
   const isUV = captureReviewLight === "uv";
-  const label = isUV ? "UV Light" : "White Field";
+  const retrain = retrainReviewItems !== null;
+  const label = isUV ? "UV Light" : "White Light";
   const folder = captureFolders[captureReviewLight]
     || item?.filename.split("/").slice(0, -1).join("/") || "";
   stopCaptureDrag();
@@ -675,15 +682,19 @@ function selectCaptureImage(index, jobId = currentJob()) {
   $("captureCounter").textContent = `Image ${total ? nextIndex + 1 : 0} / ${total}`;
   $("btnCapturePrev").disabled = nextIndex === 0;
   $("btnCaptureNext").disabled = nextIndex >= total - 1;
-  $("btnCaptureDeleteImage").disabled = !captureSelectedImage;
+  $("btnCaptureDeleteImage").disabled = !captureSelectedImage || captureDeleteRevision === captureModalRevision;
   $("captureLightTitle").textContent = label;
   updateCaptureZoomControls(activeCaptureViewport());
   $("btnCaptureDeleteImage").textContent = "Delete " + label + " Image";
   $("btnCaptureNextStep").hidden = isUV;
-  $("btnCaptureNextStep").disabled = !currentJob();
+  $("btnCaptureNextStep").disabled = !jobId;
+  $("btnCaptureNextStep").textContent = "UV Light";
   $("btnCaptureBackStep").hidden = !isUV;
-  $("btnCaptureTrainModel").hidden = !isUV;
-  $("btnCaptureTrainModel").disabled = !currentJob() || !captureSelectedImage;
+  $("btnCaptureBackStep").textContent = "White Light";
+  const trainButton = $("btnCaptureTrainModel");
+  trainButton.textContent = retrain ? "Retrain" : "Train Model";
+  trainButton.hidden = !isUV;
+  trainButton.disabled = !jobId || !captureSelectedImage;
 }
 
 function activeCaptureViewport() {
@@ -707,12 +718,11 @@ function setCaptureZoom(viewport, percent, pointer) {
     const anchorY = pointer ? pointer.y : viewport.clientHeight / 2;
     const x = (viewport.scrollLeft + anchorX) / Math.max(1, image.clientWidth);
     const y = (viewport.scrollTop + anchorY) / Math.max(1, image.clientHeight);
-    image.style.width = `${zoom}%`;
-    image.style.height = `${zoom}%`;
+    viewport.dataset.zoom = zoom;
     viewport.scrollLeft = zoom === 100 ? 0 : x * image.clientWidth - anchorX;
     viewport.scrollTop = zoom === 100 ? 0 : y * image.clientHeight - anchorY;
   }
-  viewport.dataset.zoom = zoom;
+  if (!image) viewport.dataset.zoom = zoom;
   viewport.classList.toggle("zoomed", zoom > 100);
   if (zoom === 100 && captureDrag?.viewport === viewport) stopCaptureDrag();
   if (viewport === activeCaptureViewport()) updateCaptureZoomControls(viewport);
@@ -755,9 +765,11 @@ function stopCaptureDrag(event) {
   if (viewport.hasPointerCapture(pointerId)) viewport.releasePointerCapture(pointerId);
 }
 
-async function openCaptureModal(jobId = currentJob()) {
+async function openCaptureModal(jobId = currentJob(), retrain = false) {
   const revision = ++captureModalRevision;
   const modal = $("captureModal");
+  captureModalJob = jobId;
+  retrainReviewItems = retrain ? [] : null;
   captureReviewLight = "white";
   captureSlideIndex = 0;
   whiteReviewIndex = 0;
@@ -767,6 +779,14 @@ async function openCaptureModal(jobId = currentJob()) {
   modal.setAttribute("aria-hidden", "false");
   renderCaptureSlide(jobId);
   if (!jobId) return;
+
+  if (retrain) {
+    const items = await fetchTrainingImageItems(jobId);
+    if (revision !== captureModalRevision) return;
+    retrainReviewItems = items;
+    renderCaptureSlide(jobId);
+    return;
+  }
 
   try {
     const data = JSON.parse(await callBridge("getTrainingJobFolders", jobId) || "{}");
@@ -787,39 +807,52 @@ function showCaptureReview(light) {
 }
 
 async function deleteCurrentCaptureImage() {
-  const job = currentJob();
+  const job = captureModalJob;
   const filename = captureSelectedImage;
-  if (!job || !filename) return;
+  const revision = captureModalRevision;
+  if (!job || !filename || captureDeleteRevision === revision) return;
+  captureDeleteRevision = revision;
+  $("btnCaptureDeleteImage").disabled = true;
 
-  const b = await initBridge();
-  if (!b || !b.deleteTrainingImage) return;
-
-  const raw = await callBridge("deleteTrainingImage", job, filename);
-  const data = JSON.parse(raw || "{}");
-  if (!data.ok) {
-    toast(data.message || "Delete failed");
-    return;
+  const deleted = await deleteSavedImage(job, filename);
+  if (captureDeleteRevision === revision) captureDeleteRevision = null;
+  if (revision === captureModalRevision) {
+    if (deleted && retrainReviewItems !== null) {
+      retrainReviewItems = retrainReviewItems.filter(item => item.filename !== filename);
+    }
+    if (deleted && job === currentJob()) {
+      galleryItems = galleryItems.filter(item => item.filename !== filename);
+    }
+    renderCaptureSlide();
   }
 
-  captureSelectedImage = "";
-  await refreshGallery(job);
-  renderCaptureSlide(job);
-  await refreshCounts(job);
-  toast(data.message || "Image deleted");
+  if (deleted && job === currentJob()) {
+    await refreshGallery(job);
+    await refreshCounts(job);
+  }
 }
 
 async function deleteSelectedImage() {
   const job = currentJob();
   if (!job || !selectedImage) return;
 
-  const b = await initBridge();
-  if (!b || !b.deleteTrainingImage) return;
-
-  const raw = await callBridge("deleteTrainingImage", job, selectedImage);
-  const data = JSON.parse(raw || "{}");
-  toast(data.message || (data.ok ? "Image deleted" : "Delete failed"));
+  if (!await deleteSavedImage(job, selectedImage)) return;
   await refreshGallery(job);
   await refreshCounts(job);
+}
+
+async function deleteSavedImage(job, filename) {
+  try {
+    await initBridge();
+    const raw = await callBridge("deleteTrainingImage", job, filename);
+    const data = JSON.parse(raw || "{}");
+    toast(data.message || "Unable to delete the selected image.");
+    return Boolean(data.ok);
+  } catch (error) {
+    console.error("Training image deletion failed:", error);
+    toast("Unable to delete the selected image.");
+    return false;
+  }
 }
 
 async function trainModel(job = currentJob()) {
@@ -874,11 +907,18 @@ window.addEventListener("load", async () => {
   $("btnStartTraining").addEventListener("click", startTraining);
   $("btnStopTraining").addEventListener("click", () => changeCaptureStage("stopTraining"));
   $("btnDeleteImage").addEventListener("click", deleteSelectedImage);
-  $("btnCaptureTrainModel").addEventListener("click", () => trainModel());
+  $("btnCaptureTrainModel").addEventListener("click", () => trainModel(captureModalJob));
   $("btnCaptureBackStep").addEventListener("click", () => showCaptureReview("white"));
   $("btnCaptureNextStep").addEventListener("click", () => showCaptureReview("uv"));
-  $("retrainJob").addEventListener("change", setButtons);
-  $("btnRetrain").addEventListener("click", () => trainModel($("retrainJob").value));
+  $("retrainJob").addEventListener("change", event => {
+    setButtons();
+    if (event.target.value) refreshCounts(event.target.value);
+  });
+  $("btnViewRetrainImages").addEventListener("click", () => {
+    const job = $("retrainJob").value;
+    refreshCounts(job);
+    openCaptureModal(job, true);
+  });
   $("btnCaptureModalClose").addEventListener("click", closeCaptureModal);
   $("btnCapturePrev").addEventListener("click", () => selectCaptureImage(captureSlideIndex - 1));
   $("btnCaptureNext").addEventListener("click", () => selectCaptureImage(captureSlideIndex + 1));
