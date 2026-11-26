@@ -1,6 +1,0 @@
-__pycache__/
-*.py[cod]
-.venv/
-venv/
-ConeI_data/training_images
-ConeI_data/training_images_laptop/
