@@ -1,0 +1,268 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>Texa • Settings</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+<link href="../assets/css/index.css" rel="stylesheet">
+<link href="../assets/css/setting.css" rel="stylesheet">
+<link rel="stylesheet" href="../assets/css/clock.css" />
+<script src="../assets/js/clock.js" defer></script>
+<script src="qrc:///qtwebchannel/qwebchannel.js"></script>
+</head>
+<body>
+<div class="app">
+  <header class="topbar">
+    <div class="topbar-logo">
+      <div class="logo-box">
+        <img src="../assets/logo/texa_logo.jpeg" alt="Texa" />
+      </div>
+    </div>
+
+    <div class="topbar-center">
+      <span class="page-title">Thread Inspection</span>
+      <div class="waiting-pill">
+        <span class="waiting-dot"></span>
+        <span>SETTINGS</span>
+      </div>
+    </div>
+
+    <div class="topbar-right">
+      <div class="storage-indicator" id="storageIndicator">
+        <div class="storage-title">Storage</div>
+        <span class="storage-pct" id="storagePct">-</span>
+        <div class="storage-bar-wrap">
+          <div class="storage-bar-fill" id="storageBarFill"></div>
+        </div>
+      </div>
+
+      <div class="machine_no_design">
+        <span class="job-display-label">Machine No:</span>
+        <span class="machine_number">Not configured</span>
+      </div>
+
+      <div class="dt-block">
+        <span id="dateValue" class="date">--/--/----</span>
+        <span id="timeValue" class="time">--:--:--</span>
+      </div>
+    </div>
+  </header>
+
+  <div class="body-wrap">
+    <aside class="sidebar">
+      <div class="sidebar-section">
+        <span class="sidebar-kicker">Navigation</span>
+        <button class="sidebar-btn" onclick="openHomePage()"><span class="nav-mark nav-home"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 11.5 12 4l9 7.5"></path><path d="M5.5 10.5V20h13v-9.5"></path><path d="M9.5 20v-6h5v6"></path></svg></span><span class="nav-title">Home</span></button>
+        <button class="sidebar-btn" onclick="openReportPage()"><span class="nav-mark"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 4v16"></path><path d="M9 18h10"></path><path d="M9 14h7"></path><path d="M9 10h10"></path><path d="M9 6h4"></path></svg></span><span class="nav-title">Report</span></button>
+        <button class="sidebar-btn" onclick="openControllerPage()"><span class="nav-mark"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h9"></path><path d="M17 7h3"></path><path d="M4 17h3"></path><path d="M11 17h9"></path><path d="M13 5v4"></path><path d="M9 15v4"></path></svg></span><span class="nav-title">Controller</span></button>
+        <button class="sidebar-btn" onclick="openTrainingPage()"><span class="nav-mark"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 8.5 12 4l9 4.5-9 4.5L3 8.5Z"></path><path d="M6.5 10.5V15c1.8 2 9.2 2 11 0v-4.5"></path></svg></span><span class="nav-title">Training</span></button>
+      </div>
+      <div class="sidebar-section system-section">
+        <span class="sidebar-kicker">System</span>
+        <button class="sidebar-btn active" onclick="openSettingPage()"><span class="nav-mark"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8Z"></path><path d="M12 2v3"></path><path d="M12 19v3"></path><path d="M4.9 4.9 7 7"></path><path d="m17 17 2.1 2.1"></path><path d="M2 12h3"></path><path d="M19 12h3"></path><path d="M4.9 19.1 7 17"></path><path d="m17 7 2.1-2.1"></path></svg></span><span class="nav-title">Settings</span></button>
+      </div>
+    </aside>
+
+    <main class="main-area">
+<div class="container">
+  
+  <!-- Header -->
+  <div class="header">
+    <div class="left">
+      <div>
+        <div class="page-kicker">System</div>
+        <div class="title">Settings</div>
+      </div>
+    </div>
+    <div class="tabs">
+      <button class="tab active" data-sub="quick">Quick Setup</button>
+      <button class="tab" data-sub="entry">Tip Images</button>
+      <button class="tab" data-sub="shift">Shift</button>
+      
+    </div>
+  </div>
+
+  <!-- QUICK SETUP -->
+  <section id="sub-quick">
+    <div class="card">
+      <div class="head"><i class="fa-solid fa-sliders"></i><h3>Welcome • Quick Setup</h3></div>
+      <div class="body">
+
+        <!-- Two-column fields -->
+        <div class="qfields">
+
+          <div>
+            <div class="label">Cone Color:</div>
+            <div class="qrow">
+              <select class="select" id="cone_color">
+                <option value="white">White</option>
+                <option value="orange">Orange</option>
+                <!-- <option value="yellow">Yellow</option>
+                <option value="green">Green</option> -->
+              </select>
+              <button class="btn-mini ok" id="s_color" title="Save">✔</button>
+              <button class="btn-mini no" id="c_color" title="Clear">✖</button>
+            </div>
+          </div>
+          <!-- <br> -->
+
+          <div>
+            <div class="label">Cone Count:</div>
+            <div class="qrow">
+              <select class="select" id="cone_count">
+                <!-- <option value="16s">16s</option>
+                <option value="20s">20s</option> -->
+                <option value="24s">24s</option>
+                <option value="27s">27s</option>
+                <option value="40_2s">40/2s</option>
+                <!-- <option value="47s">47s</option> -->
+              </select>
+              <button class="btn-mini ok" id="s_count" title="Save">✔</button>
+              <button class="btn-mini no" id="c_count" title="Clear">✖</button>
+            </div>
+          </div>
+          <!-- <br> -->
+
+          <div>
+            <div class="label">Tip Confidence:</div>
+            <div class="qrow">
+              <select class="select" id="tip_confidence"></select>
+              <button class="btn-mini ok" id="s_tip_confidence" title="Save">✔</button>
+              <button class="btn-mini no" id="c_tip_confidence" title="Clear">✖</button>
+            </div>
+          </div>
+
+          <div>
+            <div class="label">Top Confidence:</div>
+            <div class="qrow">
+              <select class="select" id="top_confidence"></select>
+              <button class="btn-mini ok" id="s_top_confidence" title="Save">✔</button>
+              <button class="btn-mini no" id="c_top_confidence" title="Clear">✖</button>
+            </div>
+          </div>
+
+          <div>
+            <div class="label">Bottom Confidence:</div>
+            <div class="qrow">
+              <select class="select" id="bottom_confidence"></select>
+              <button class="btn-mini ok" id="s_bottom_confidence" title="Save">✔</button>
+              <button class="btn-mini no" id="c_bottom_confidence" title="Clear">✖</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+
+ <section id="sub-entry" style="display:none">
+  <div class="card">
+    <div class="head"><i class="fa-regular fa-square-plus"></i><h3>Tip Images</h3></div>
+    <div class="body">
+
+      <div class="tipsel">
+        <button class="btn primary" id="tip_save">Save Selected</button>
+        <button class="btn danger" id="tip_delete">Delete Selected</button>
+        <button class="btn ghost" id="tip_clear">Clear All</button>
+        <button class="btn ghost" id="tip_refresh">🔄 Refresh</button>
+        <div style="margin-left:auto; font-size:13px; opacity:0.8;">
+          Selected: <span id="tip_count">0</span>
+        </div>
+      </div>
+
+      <div class="container-fluid">
+        <div class="row" id="defectImageContainer"></div>
+      </div>
+
+    </div>
+  </div>
+</section>
+
+
+<section id="sub-shift" style="display:none">
+  <div class="card">
+    <div class="head">
+      <i class="fa-solid fa-clock"></i>
+      <h3>Shift Settings</h3>
+    </div>
+
+    <div class="body">
+
+      <!-- Two-column inputs -->
+      <div class="grid">
+        <div class="full">
+          <div class="label">Shift Name</div>
+          <input type="text" class="input" id="shift_name" placeholder="Morning / Evening / Night">
+        </div>
+
+        <div>
+          <div class="label">Start Time</div>
+          <input type="time" class="input" id="shift_start">
+        </div>
+
+        <div>
+          <div class="label">End Time</div>
+          <input type="time" class="input" id="shift_end">
+        </div>
+      </div>
+
+      <!-- Buttons -->
+      <div style="display:flex; margin-top:12px; align-items:center;" class="tab_ls">
+        <button class="btn primary" id="shift_add">
+          <i class="fa-solid fa-plus"></i> Add
+        </button>
+
+        <button class="btn danger" id="shift_remove" disabled>
+          <i class="fa-solid fa-trash"></i> Remove
+        </button>
+
+
+        <button class="btn ghost" id="btnShiftMailReceivers">
+            📧 Shift Report Receivers
+        </button>
+
+
+        <div style="margin-left:auto; font-size:13px; opacity:0.85;">
+          Selected: <span id="shift_selected">None</span>
+        </div>
+      </div>
+
+      <!-- List -->
+      <div style="margin-top:14px;">
+        <div class="label" style="margin-bottom:6px;">Shift List</div>
+
+        <div style="overflow:auto; border:1px solid rgba(255,255,255,0.08); border-radius:12px;">
+          <table style="width:100%; border-collapse:collapse; font-size:14px;">
+            <thead>
+              <tr style="background:rgba(255,255,255,0.06); text-align:left;">
+                <th style="padding:10px;">ID</th>
+                <th style="padding:10px;">Shift</th>
+                <th style="padding:10px;">Start</th>
+                <th style="padding:10px;">End</th>
+                <th style="padding:10px;">Status</th>
+              </tr>
+            </thead>
+            <tbody id="shift_tbody">
+              <tr><td colspan="5" style="padding:12px; opacity:0.8;">No shifts added</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</section>
+
+</div>
+    </main>
+  </div>
+</div>
+
+<!-- Toast -->
+<div class="toast" id="toast"></div>
+
+<script src="../assets/js/setting.js"></script>
+
+</body>
+</html>

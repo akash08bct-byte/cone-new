@@ -1,0 +1,313 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Cone Inspection UI</title>
+    <link rel="stylesheet" href="../assets/css/index.css" />
+    <link rel="stylesheet" href="../assets/css/clock.css" />
+    <script src="../assets/js/clock.js" defer></script>
+    <script src="qrc:///qtwebchannel/qwebchannel.js"></script>
+  </head>
+
+  <body>
+    <div class="app">
+      <header class="topbar">
+        <div class="topbar-logo">
+          <div class="logo-box">
+            <img src="../assets/logo/texa_logo.jpeg" alt="Texa" />
+          </div>
+        </div>
+
+        <div class="topbar-center">
+          <span class="page-title">Thread Inspection</span>
+          <div class="waiting-pill">
+            <span class="waiting-dot"></span>
+            <span id="statusText">WAITING</span>
+          </div>
+        </div>
+
+        <div class="topbar-right">
+          <div class="storage-indicator" id="storageIndicator">
+            <div class="storage-title">Storage</div>
+            <span class="storage-pct" id="storagePct">-</span>
+            <div class="storage-bar-wrap">
+              <div class="storage-bar-fill" id="storageBarFill"></div>
+            </div>
+          </div>
+
+          <div class="machine_no_design">
+            <span class="job-display-label">Machine No:</span>
+            <span class="machine_number" id="displayMachineNo">Not configured</span>
+          </div>
+
+          <div class="dt-block">
+            <span id="dateValue" class="date">--/--/----</span>
+            <span id="timeValue" class="time">--:--:--</span>
+          </div>
+        </div>
+      </header>
+
+      <div class="body-wrap">
+        <aside class="sidebar">
+          <div class="sidebar-section">
+            <span class="sidebar-kicker">Navigation</span>
+            <button class="sidebar-btn active" onclick="openHome()">
+              <span class="nav-mark nav-home">
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M3 11.5 12 4l9 7.5"></path>
+                  <path d="M5.5 10.5V20h13v-9.5"></path>
+                  <path d="M9.5 20v-6h5v6"></path>
+                </svg>
+              </span>
+              <span class="nav-title">Home</span>
+            </button>
+            <button class="sidebar-btn" onclick="openReport()">
+              <span class="nav-mark">
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M5 4v16"></path>
+                  <path d="M9 18h10"></path>
+                  <path d="M9 14h7"></path>
+                  <path d="M9 10h10"></path>
+                  <path d="M9 6h4"></path>
+                </svg>
+              </span>
+              <span class="nav-title">Report</span>
+            </button>
+            <button class="sidebar-btn" onclick="openController()">
+              <span class="nav-mark">
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M4 7h9"></path>
+                  <path d="M17 7h3"></path>
+                  <path d="M4 17h3"></path>
+                  <path d="M11 17h9"></path>
+                  <path d="M13 5v4"></path>
+                  <path d="M9 15v4"></path>
+                </svg>
+              </span>
+              <span class="nav-title">Controller</span>
+            </button>
+            <button class="sidebar-btn" onclick="openTraining()">
+              <span class="nav-mark">
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M3 8.5 12 4l9 4.5-9 4.5L3 8.5Z"></path>
+                  <path d="M6.5 10.5V15c1.8 2 9.2 2 11 0v-4.5"></path>
+                </svg>
+              </span>
+              <span class="nav-title">Training</span>
+            </button>
+          </div>
+
+          <div class="sidebar-section system-section">
+            <span class="sidebar-kicker">System</span>
+            <button class="sidebar-btn" onclick="openSetting()">
+              <span class="nav-mark">
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8Z"></path>
+                  <path d="M12 2v3"></path>
+                  <path d="M12 19v3"></path>
+                  <path d="M4.9 4.9 7 7"></path>
+                  <path d="m17 17 2.1 2.1"></path>
+                  <path d="M2 12h3"></path>
+                  <path d="M19 12h3"></path>
+                  <path d="M4.9 19.1 7 17"></path>
+                  <path d="m17 7 2.1-2.1"></path>
+                </svg>
+              </span>
+              <span class="nav-title">Settings</span>
+            </button>
+          </div>
+        </aside>
+
+        <main class="main-area">
+          <header class="header">
+            <div class="header-title">Cone Inspection System</div>
+          </header>
+
+          <div class="panel-row">
+            <section class="center-panel" aria-label="Main image and controls">
+              <div class="big-box">
+                <img id="cameraFeed" src="" alt="Main View" class="center-image" />
+              </div>
+
+              <div class="control-buttons">
+                <button class="circle-btn start" id="btnStart">Start</button>
+                <button class="circle-btn stop" id="btnStop">Stop</button>
+                <button class="circle-btn reset" id="btnReset">Reset</button>
+              </div>
+            </section>
+
+            <aside class="right-panel" aria-label="Side image views">
+              <p>Thread Image</p>
+              <div class="small-box1">
+                <img src="" id="threadImg" alt="Thread View" class="small-box-image" />
+              </div>
+
+              <p>Ring Image</p>
+              <div class="small-box2">
+                <img src="" id="ringImg" alt="Ring View" class="small-box-image2" />
+              </div>
+            </aside>
+          </div>
+        </main>
+      </div>
+    </div>
+    <div class="toast" id="toast"></div>
+
+    <script src="../assets/js/storage.js"></script>
+    <script>
+      let bridge = null;
+      let lastUpdate = 0;
+      let channelTries = 0;
+
+      function showMessage(msg) {
+        const t = document.getElementById("toast");
+        if (!t) {
+          console.log("MESSAGE:", msg);
+          return;
+        }
+        t.textContent = msg;
+        t.classList.add("show");
+        setTimeout(() => t.classList.remove("show"), 1400);
+      }
+
+      function initBridge() {
+        if (
+          typeof QWebChannel === "undefined" ||
+          typeof qt === "undefined" ||
+          !qt.webChannelTransport
+        ) {
+          channelTries += 1;
+          if (channelTries < 100) {
+            setTimeout(initBridge, 100);
+          } else {
+            showMessage("Bridge not ready.");
+          }
+          return;
+        }
+
+        new QWebChannel(qt.webChannelTransport, function (channel) {
+          bridge = channel.objects.bridge;
+          if (!bridge) {
+            showMessage("Bridge not connected.");
+            return;
+          }
+
+          startStorageIndicator(bridge);
+
+          bridge.frame_signal.connect(function (base64Data) {
+            const now = Date.now();
+            if (now - lastUpdate < 50) return;
+            lastUpdate = now;
+
+            const frame = "data:image/jpeg;base64," + base64Data;
+            for (const id of ["cameraFeed", "threadImg", "ringImg"]) {
+              document.getElementById(id).src = frame;
+            }
+          });
+        });
+      }
+
+      function openController() {
+        if (bridge) {
+          const result = bridge.showController();
+          if (!result) {
+            alert("Machine Running.");
+          }
+        } else {
+          alert("Bridge not connected.");
+        }
+      }
+
+      function openSetting() {
+        if (bridge) bridge.showSetting();
+        else alert("Bridge not connected.");
+      }
+
+      function openReport() {
+        if (bridge) bridge.showReport();
+        else alert("Bridge not connected.");
+      }
+
+      function openHome() {
+        if (bridge && bridge.showHome) bridge.showHome();
+      }
+
+      function openTraining() {
+        if (bridge && bridge.showTraining) bridge.showTraining();
+        else openController();
+      }
+
+      function handleStartResult(result) {
+        if (result === "camera") {
+          alert("Camera not connected.");
+        } else if (result === "Air_pressure") {
+          alert("Check the air pressure.");
+        } else if (result === "board_connection") {
+          alert("Check the board connection.");
+        }
+
+        if (result && result !== "ok" && result !== "already_running") {
+          setRunButtonState(false);
+        }
+      }
+
+      function setRunButtonState(isRunning) {
+        const btnStart = document.getElementById("btnStart");
+        const btnStop = document.getElementById("btnStop");
+        const btnReset = document.getElementById("btnReset");
+
+        btnStart.disabled = isRunning;
+        btnStop.disabled = !isRunning;
+        btnReset.disabled = isRunning;
+      }
+
+      document.addEventListener("DOMContentLoaded", () => {
+        initBridge();
+
+        const btnStart = document.getElementById("btnStart");
+        const btnStop = document.getElementById("btnStop");
+        const btnReset = document.getElementById("btnReset");
+
+        setRunButtonState(false);
+
+        btnStart.addEventListener("click", () => {
+          setRunButtonState(true);
+          if (bridge && bridge.startCamera) {
+            const maybePromise = bridge.startCamera(handleStartResult);
+            if (typeof maybePromise === "string") {
+              handleStartResult(maybePromise);
+              if (maybePromise !== "ok" && maybePromise !== "already_running") {
+                setRunButtonState(false);
+              }
+            }
+            if (maybePromise && typeof maybePromise.then === "function") {
+              maybePromise.then((result) => {
+                handleStartResult(result);
+                if (result !== "ok" && result !== "already_running") {
+                  setRunButtonState(false);
+                }
+              });
+            }
+          } else {
+            setRunButtonState(false);
+          }
+        });
+
+        btnStop.addEventListener("click", () => {
+          if (bridge && bridge.stopCamera) {
+            bridge.stopCamera();
+          }
+          setRunButtonState(false);
+        });
+
+        btnReset.addEventListener("click", () => {
+          if (bridge && bridge.resetSystem) {
+            bridge.resetSystem();
+          }
+          setRunButtonState(false);
+        });
+      });
+    </script>
+  </body>
+</html>
