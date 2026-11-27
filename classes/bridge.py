@@ -5,7 +5,8 @@ import time
 import threading
 import cv2
 import base64
-from classes.plc import plc_check, white_light_signal, uv_light_signal
+# from classes.plc import plc_check, white_light_signal, uv_light_signal
+from classes.Plc_connection import uv_light_signal, white_light_signal, uv_light_result, white_light_result
 # Project Imports
 from paths import (
     TRAINING_PAGE , CONTROLLER_PAGE, INDEX_PAGE, SETTINGS_PAGE, SETTINGS_JSON, TRAINING_IMG
@@ -183,11 +184,13 @@ class Bridge(QObject):
                         self.training_trigger.set()
                         self.session_white_count += 1
                         self.white_light_process = True
+                        white_light_result(1)
                 elif self.uv_light_signal and not self.uv_light_process:
                     if self.save_training_images(frame, self.job_id, "top_uv", self.session_uv_count + 1):
                         self.training_trigger.set()
                         self.session_uv_count += 1
                         self.uv_light_process = True
+                        uv_light_result(1)
                 else:
                     self.training_trigger.clear()
 
