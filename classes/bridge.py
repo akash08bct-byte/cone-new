@@ -184,14 +184,14 @@ class Bridge(QObject):
                         self.training_trigger.set()
                         self.session_white_count += 1
                         self.white_light_process = True
-                        time.sleep(1.0)
+                        time.sleep(2.0)
                         white_light_result(1)
                 elif self.uv_light_signal and not self.uv_light_process:
                     if self.save_training_images(frame, self.job_id, "top_uv", self.session_uv_count + 1):
                         self.training_trigger.set()
                         self.session_uv_count += 1
                         self.uv_light_process = True
-                        time.sleep(1.0)
+                        time.sleep(2.0)
                         uv_light_result(1)
                 else:
                     self.training_trigger.clear()
@@ -489,7 +489,7 @@ class Bridge(QObject):
         """
         try:
             self.settings = self.load_settings_json(SETTINGS_JSON)
-            camera_name = str(self.settings.get("camera_name", "webcam")).strip().lower()
+            camera_name = str(self.settings.get("camera_name", "lucid")).strip().lower()
 
             if camera_name == "lucid":
                 from classes.lucid import LucidCamera
