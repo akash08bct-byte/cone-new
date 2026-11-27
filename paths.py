@@ -51,7 +51,7 @@ TRAINING_PAGE  = TEMPLATES_DIR / "training.html"
 CONTROLLER_PAGE  = TEMPLATES_DIR / "controller.html"
 REPORT_PAGE = TEMPLATES_DIR / "reports.html"
 SETTINGS_PAGE = TEMPLATES_DIR / "settings.html"
-
+INVOICE_PDF = TEMPLATES_DIR / "belt-invoice.pdf"
 # =====================================================
 # READ / WRITE (RUNTIME) PATHS
 # =====================================================

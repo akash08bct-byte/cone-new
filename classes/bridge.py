@@ -595,3 +595,17 @@ class Bridge(QObject):
     @pyqtSlot()
     def showSetting(self):
         self.main_window.load_page(SETTINGS_PAGE)
+
+    @pyqtSlot(result=str)
+    def openInvoiceViewer(self):
+        try:
+            from classes.invoice_viewer import InvoiceViewer
+
+            parent = getattr(self.main_window, "report_window", None) or self.main_window
+            viewer = InvoiceViewer(parent)
+            viewer.finished.connect(viewer.deleteLater)
+            viewer.open()
+            return ""
+        except Exception as exc:
+            error_log("Open invoice viewer", exc)
+            return "Could not open invoice preview"
