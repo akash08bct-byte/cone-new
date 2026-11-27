@@ -903,6 +903,12 @@ window.addEventListener("load", async () => {
   setButtons();
 
   $("btnLiveStart").addEventListener("click", startLive);
+  $("cameraFeed").addEventListener("load", (event) => {
+    const { naturalWidth, naturalHeight } = event.currentTarget;
+    const badge = $("liveBadge");
+    const label = `LIVE · ${naturalWidth} × ${naturalHeight}`;
+    if (badge.textContent !== label) badge.textContent = label;
+  });
   $("btnLiveStop").addEventListener("click", stopLive);
   $("btnStartTraining").addEventListener("click", startTraining);
   $("btnStopTraining").addEventListener("click", () => changeCaptureStage("stopTraining"));

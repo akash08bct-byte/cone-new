@@ -1,6 +1,9 @@
 import cv2
 import os
 
+TRAINING_FRAME_WIDTH = 2448
+TRAINING_FRAME_HEIGHT = 2048
+
 # =========================================================
 # 3. WEBCAM CLASS (Fallback)
 # =========================================================
@@ -12,6 +15,8 @@ class Webcam:
             print("❌ Webcam Initialization Failed")
             self.cap = None
         else:
+            self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, TRAINING_FRAME_WIDTH)
+            self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, TRAINING_FRAME_HEIGHT)
             print("✅ Webcam Initialized Successfully")
 
     def open(self,exposer = None):
