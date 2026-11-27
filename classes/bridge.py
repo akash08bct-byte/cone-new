@@ -6,7 +6,7 @@ import threading
 import cv2
 import base64
 # from classes.plc import plc_check, white_light_signal, uv_light_signal
-from classes.Plc_connection import uv_light_signal, white_light_signal, uv_light_result, white_light_result
+from classes.Plc_connection import machine_status, uv_light_signal, white_light_signal, uv_light_result, white_light_result
 # Project Imports
 from paths import (
     TRAINING_PAGE , CONTROLLER_PAGE, INDEX_PAGE, SETTINGS_PAGE, SETTINGS_JSON, TRAINING_IMG
@@ -167,7 +167,7 @@ class Bridge(QObject):
 
     def connection_check(self):
         try:
-            self.plc_status = plc_check()
+            self.plc_status = machine_status()
 
             self.white_light_signal = white_light_signal()
             self.uv_light_signal = uv_light_signal()
@@ -184,12 +184,14 @@ class Bridge(QObject):
                         self.training_trigger.set()
                         self.session_white_count += 1
                         self.white_light_process = True
+                        time.sleep(1.0)
                         white_light_result(1)
                 elif self.uv_light_signal and not self.uv_light_process:
                     if self.save_training_images(frame, self.job_id, "top_uv", self.session_uv_count + 1):
                         self.training_trigger.set()
                         self.session_uv_count += 1
                         self.uv_light_process = True
+                        time.sleep(1.0)
                         uv_light_result(1)
                 else:
                     self.training_trigger.clear()
@@ -487,7 +489,7 @@ class Bridge(QObject):
         """
         try:
             self.settings = self.load_settings_json(SETTINGS_JSON)
-            camera_name = str(self.settings.get("camera_name", "lucid")).strip().lower()
+            camera_name = str(self.settings.get("camera_name", "webcam")).strip().lower()
 
             if camera_name == "lucid":
                 from classes.lucid import LucidCamera
@@ -498,7 +500,7 @@ class Bridge(QObject):
                 return HikRobotCamera()
 
             elif camera_name == "webcam":
-                idx = int(self.settings.get("camera_index", 0))
+                idx = int(self.settings.get("camera_index", 1))
                 return Webcam(index=idx)
 
             else:
@@ -546,7 +548,7 @@ class Bridge(QObject):
 
         # Fallback webcam
         try:
-            idx = self.settings.get("camera_index", 0)
+            idx = self.settings.get("camera_index", 1)
             cam = Webcam(index=int(idx))
             ok = cam.open()
             print(f"⚠️ Worker: Webcam.open({idx}) = {ok}")

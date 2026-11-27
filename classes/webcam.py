@@ -6,7 +6,7 @@ import os
 # =========================================================
 
 class Webcam:
-    def __init__(self, index=0):
+    def __init__(self, index=1):
         self.cap = cv2.VideoCapture(index, cv2.CAP_DSHOW) if os.name == "nt" else cv2.VideoCapture(index)
         if not self.cap or not self.cap.isOpened():
             print("❌ Webcam Initialization Failed")
