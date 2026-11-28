@@ -1,6 +1,11 @@
 import os
 import sys
 
+if __name__ == "__main__" and sys.argv[1:2] == ["--train-models"]:
+    from classes.training_worker import run
+
+    sys.exit(run(*sys.argv[2:]))
+
 os.environ["QTWEBENGINE_CHROMIUM_FLAGS"] = "--disable-gpu --disable-gpu-compositing --disable-features=Vulkan --log-level=3"
 os.environ["QT_OPENGL"] = "software"
 os.environ["QT_QUICK_BACKEND"] = "software"

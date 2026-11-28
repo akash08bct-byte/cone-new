@@ -453,6 +453,287 @@
   border-color: var(--line);
 }
 
+.model-training-overlay {
+  position: fixed;
+  right:0;
+  transform: translate(-50% ,-50%);
+  top: 50%;
+  left: 50%;
+  width: 100%;
+  height: 100%;
+  inset: 0;
+  z-index: 20;
+  display: none;
+  place-items: center;
+  background: rgba(15, 23, 42, 0.48);
+}
+
+.model-training-overlay.open {
+  display: grid;
+}
+
+.model-training-dialog {
+  --training-accent: var(--brand);
+  --training-tint: #f7eaed;
+  --training-edge: clamp(12px, 5vw, 24px);
+  width: min(460px, calc(100% - 24px));
+  max-height: calc(100% - 24px);
+  overflow: auto;
+  border-radius: 16px;
+  background: var(--panel);
+  box-shadow: var(--shadow);
+  color: var(--ink);
+}
+
+.model-training-header {
+  display: grid;
+  grid-template-columns: var(--training-edge) minmax(0, 1fr) var(--training-edge);
+  min-height: 56px;
+  align-items: center;
+  background: linear-gradient(90deg, var(--brand), var(--brand-dark));
+  color: #fff;
+}
+
+#modelTrainingTitle {
+  grid-column: 2;
+  font-size: 17px;
+  font-weight: 700;
+}
+
+.model-training-progress {
+  display: grid;
+  grid-template-columns: var(--training-edge) minmax(0, 1fr) var(--training-edge);
+  grid-template-rows: 24px auto 22px auto 24px;
+  overflow-wrap: anywhere;
+}
+
+.model-training-status {
+  grid-area: 2 / 2;
+  display: grid;
+  grid-template-columns: auto 14px minmax(0, 1fr);
+  align-items: start;
+}
+
+.model-training-copy {
+  grid-column: 3;
+  display: grid;
+  grid-template-rows: auto 5px auto;
+}
+
+#modelTrainingState {
+  font-size: 20px;
+  line-height: 1.25;
+}
+
+#modelTrainingMessage {
+  grid-row: 3;
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1.45;
+}
+
+.model-training-icon {
+  display: grid;
+  width: 42px;
+  height: 42px;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--training-tint);
+  color: var(--training-accent);
+}
+
+.model-training-orbit {
+  display: none;
+}
+
+.model-training-dialog[data-stage="running"] .model-training-status {
+  align-items: center;
+}
+
+.model-training-dialog[data-stage="running"] .model-training-icon {
+  position: relative;
+  width: 64px;
+  height: 64px;
+  background: radial-gradient(circle, var(--panel) 20%, var(--training-tint) 70%);
+  box-shadow: inset 0 0 0 1px var(--training-tint);
+}
+
+.model-training-dialog[data-stage="running"] .model-training-icon::before {
+  content: "";
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--training-accent);
+  animation: training-pulse 1.5s ease-in-out infinite;
+}
+
+.model-training-dialog[data-stage="running"] .model-training-orbit {
+  position: absolute;
+  inset: 7px;
+  display: block;
+  border: 1px solid #dcbac2;
+  border-radius: 50%;
+  animation: training-spin 1.35s linear infinite;
+}
+
+.model-training-orbit::before,
+.model-training-orbit::after {
+  position: absolute;
+  content: "";
+  border-radius: 50%;
+  background: var(--training-accent);
+}
+
+.model-training-orbit::before {
+  top: -4px;
+  left: calc(50% - 4px);
+  width: 8px;
+  height: 8px;
+}
+
+.model-training-orbit::after {
+  right: -2px;
+  bottom: 12px;
+  width: 5px;
+  height: 5px;
+  opacity: 0.55;
+}
+
+.model-training-dialog[data-stage="completed"] {
+  --training-accent: var(--ok);
+  --training-tint: var(--ok-soft);
+}
+
+.model-training-dialog[data-stage="completed"] .model-training-icon::before {
+  content: "";
+  width: 8px;
+  height: 15px;
+  border: solid currentColor;
+  border-width: 0 2px 2px 0;
+  border-radius: 0;
+  transform: translateY(-2px) rotate(45deg);
+  animation: none;
+}
+
+.model-training-dialog[data-stage="failed"] {
+  --training-accent: var(--danger);
+}
+
+.model-training-dialog[data-stage="failed"] .model-training-icon::before {
+  content: "!";
+  width: auto;
+  height: auto;
+  border: 0;
+  font-size: 20px;
+  font-weight: 800;
+  animation: none;
+}
+
+.model-training-metrics {
+  grid-area: 4 / 2;
+  display: grid;
+  grid-template-columns: 14px minmax(0, 1fr) 14px;
+  grid-template-rows: 12px auto 9px 8px 14px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel-soft);
+}
+
+.model-training-summary {
+  grid-area: 2 / 2;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 12px auto;
+  align-items: baseline;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+#modelTrainingPercent {
+  grid-column: 3;
+  color: var(--training-accent);
+  font-size: 22px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.model-training-progress progress {
+  grid-area: 4 / 2;
+  display: block;
+  width: 100%;
+  height: 8px;
+  overflow: hidden;
+  border: 0;
+  border-radius: 999px;
+  background: #e3e7ed;
+  appearance: none;
+}
+
+.model-training-progress progress::-webkit-progress-bar {
+  border-radius: 999px;
+  background: #e3e7ed;
+}
+
+.model-training-progress progress::-webkit-progress-value {
+  border-radius: 999px;
+  background: var(--training-accent);
+  transition: width 180ms ease-out;
+}
+
+.model-training-progress progress::-moz-progress-bar {
+  border-radius: 999px;
+  background: var(--training-accent);
+}
+
+.model-training-actions {
+  display: grid;
+  grid-template-columns: 1fr auto var(--training-edge);
+  min-height: 66px;
+  align-items: center;
+  border-top: 1px solid var(--line);
+  background: var(--panel-soft);
+}
+
+.model-training-close {
+  all: unset;
+  grid-column: 2;
+  display: grid;
+  width: 92px;
+  min-height: 38px;
+  place-items: center;
+  border-radius: var(--r);
+  background: var(--brand);
+  color: #fff;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.model-training-close:hover {
+  background: var(--brand-dark);
+}
+
+.model-training-close:focus-visible {
+  outline: 2px solid var(--brand);
+  outline-offset: 3px;
+}
+
+#modelTrainingActions[hidden] {
+  display: none;
+}
+
+@keyframes training-spin {
+  to { transform: rotate(360deg); }
+}
+
+@keyframes training-pulse {
+  50% { box-shadow: 0 0 0 7px var(--training-tint); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .model-training-dialog[data-stage="running"] .model-training-icon::before,
+  .model-training-dialog[data-stage="running"] .model-training-orbit { animation: none; }
+  .model-training-progress progress::-webkit-progress-value { transition: none; }
+}
+
 .capture-modal .job-modal-head {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto;

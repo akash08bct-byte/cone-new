@@ -25,6 +25,7 @@ let captureDeleteRevision = null;
 let retrainReviewItems = null;
 let galleryRevision = 0;
 let modelTrainingRequest = false;
+let modelTrainingJob = "";
 
 function $(id) {
   return document.getElementById(id);
@@ -53,6 +54,9 @@ function initBridge() {
 
       if (bridgeReady && bridge.frame_signal) {
         bridge.frame_signal.connect(updateCameraFrame);
+      }
+      if (bridge?.model_training_status) {
+        bridge.model_training_status.connect((raw) => updateModelTraining(JSON.parse(raw)));
       }
 
       resolve(bridge);
@@ -103,7 +107,7 @@ function setButtons() {
   retrainJob.disabled = sessionActive || captureRequest || modelTrainingRequest || retrainJob.options.length < 2;
   $("btnViewRetrainImages").disabled = retrainJob.disabled || !retrainJob.value;
   document.querySelectorAll(".sidebar-btn").forEach((button) => {
-    button.disabled = sessionActive || captureRequest;
+    button.disabled = sessionActive || captureRequest || modelTrainingRequest;
   });
 }
 
@@ -621,9 +625,11 @@ async function imageDataFor(jobId, filename) {
 }
 
 function closeCaptureModal() {
+  if (modelTrainingRequest) return;
   captureModalRevision += 1;
   stopCaptureDrag();
   const modal = $("captureModal");
+  if (modal.contains(document.activeElement)) document.activeElement.blur();
   modal.classList.remove("open");
   modal.setAttribute("aria-hidden", "true");
 }
@@ -682,7 +688,7 @@ function selectCaptureImage(index, jobId = captureModalJob) {
   $("captureCounter").textContent = `Image ${total ? nextIndex + 1 : 0} / ${total}`;
   $("btnCapturePrev").disabled = nextIndex === 0;
   $("btnCaptureNext").disabled = nextIndex >= total - 1;
-  $("btnCaptureDeleteImage").disabled = !captureSelectedImage || captureDeleteRevision === captureModalRevision;
+  $("btnCaptureDeleteImage").disabled = modelTrainingRequest || !captureSelectedImage || captureDeleteRevision === captureModalRevision;
   $("captureLightTitle").textContent = label;
   updateCaptureZoomControls(activeCaptureViewport());
   $("btnCaptureDeleteImage").textContent = "Delete " + label + " Image";
@@ -694,7 +700,7 @@ function selectCaptureImage(index, jobId = captureModalJob) {
   const trainButton = $("btnCaptureTrainModel");
   trainButton.textContent = retrain ? "Retrain" : "Train Model";
   trainButton.hidden = !isUV;
-  trainButton.disabled = !jobId || !captureSelectedImage;
+  trainButton.disabled = modelTrainingRequest || !jobId || !captureSelectedImage || captureDeleteRevision === captureModalRevision;
 }
 
 function activeCaptureViewport() {
@@ -813,6 +819,7 @@ async function deleteCurrentCaptureImage() {
   if (!job || !filename || captureDeleteRevision === revision) return;
   captureDeleteRevision = revision;
   $("btnCaptureDeleteImage").disabled = true;
+  $("btnCaptureTrainModel").disabled = true;
 
   const deleted = await deleteSavedImage(job, filename);
   if (captureDeleteRevision === revision) captureDeleteRevision = null;
@@ -856,24 +863,64 @@ async function deleteSavedImage(job, filename) {
 }
 
 async function trainModel(job = currentJob()) {
-  if (modelTrainingRequest) return;
+  if (modelTrainingRequest || captureDeleteRevision === captureModalRevision) return;
   if (!job) {
     toast("Select a Job ID");
     return;
   }
 
+  const retrain = retrainReviewItems !== null;
+  closeCaptureModal();
+  modelTrainingJob = job;
   modelTrainingRequest = true;
+  const modal = $("modelTrainingModal");
+  $("modelTrainingTitle").textContent = retrain ? "Retrain Model" : "Train Model";
+  $("modelTrainingActions").hidden = true;
+  modal.setAttribute("aria-hidden", "false");
+  modal.classList.add("open");
+  $("modelTrainingDialog").focus();
   setButtons();
+  updateModelTraining({ stage: "running", message: "Preparing training images", completed: 0 });
   try {
     const raw = await callBridge("startModelTraining", job);
     const data = JSON.parse(raw || "{}");
-    toast(data.message || (data.ok ? "Model training request sent" : "Model training is not available"));
+    if (!data.ok) {
+      updateModelTraining({ stage: "failed", message: data.message || "Model training is unavailable." });
+    }
   } catch (error) {
-    toast("Unable to start model training.");
-  } finally {
+    updateModelTraining({ stage: "failed", message: "Unable to start model training." });
+  }
+}
+
+function updateModelTraining({ job_id, stage, message, completed = 0, total }) {
+  if (!modelTrainingRequest || (job_id && job_id !== modelTrainingJob)) return;
+  const percent = total > 0 ? Math.floor(100 * completed / total) : 0;
+  $("modelTrainingDialog").dataset.stage = stage;
+  $("modelTrainingState").textContent = stage === "completed"
+    ? "Training complete"
+    : stage === "failed" ? "Training failed" : "Training in progress";
+  $("modelTrainingMessage").textContent = message;
+  $("modelTrainingCount").textContent = total
+    ? `${completed} / ${total} images processed`
+    : (stage === "running" ? "0 images processed" : "");
+
+  $("modelTrainingPercent").textContent = `${percent}%`;
+  $("modelTrainingBar").value = percent;
+
+  if (stage !== "running") {
     modelTrainingRequest = false;
     setButtons();
+    $("modelTrainingActions").hidden = false;
+    $("btnCloseModelTraining").focus();
   }
+}
+
+function closeModelTrainingModal() {
+  if (modelTrainingRequest) return;
+  const modal = $("modelTrainingModal");
+  $(retrainReviewItems !== null ? "btnViewRetrainImages" : "btnStartTraining").focus();
+  modal.classList.remove("open");
+  modal.setAttribute("aria-hidden", "true");
 }
 
 function openHomePage() {
@@ -914,6 +961,11 @@ window.addEventListener("load", async () => {
   $("btnStopTraining").addEventListener("click", () => changeCaptureStage("stopTraining"));
   $("btnDeleteImage").addEventListener("click", deleteSelectedImage);
   $("btnCaptureTrainModel").addEventListener("click", () => trainModel(captureModalJob));
+  $("btnCloseModelTraining").addEventListener("click", closeModelTrainingModal);
+  $("modelTrainingDialog").addEventListener("keydown", (event) => {
+    if (event.key === "Escape") closeModelTrainingModal();
+    if (event.key === "Tab") event.preventDefault();
+  });
   $("btnCaptureBackStep").addEventListener("click", () => showCaptureReview("white"));
   $("btnCaptureNextStep").addEventListener("click", () => showCaptureReview("uv"));
   $("retrainJob").addEventListener("change", event => {

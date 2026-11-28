@@ -1,17 +1,15 @@
 
 import os
-import cv2
-import joblib
 import torch
+import joblib
 import numpy as np
 
 from pathlib import Path
-from PIL import Image
 from torchvision import models, transforms
 from torch.utils.data import Dataset, DataLoader
 from sklearn.neighbors import NearestNeighbors
 from tqdm import tqdm
-from classes.split_thread import split_thread_tip
+from classes.training_images import load_thread_image, training_image_paths
 
 # ================= EFFICIENTNET B7 =================
 
@@ -46,24 +44,8 @@ class EffB7_Feature(torch.nn.Module):
 
 class GoodConeDataset(Dataset):
 
-    def __init__(self, image_dir, img_size):
-
-        self.image_dir = Path(image_dir)
-
-        valid_extensions = {
-            ".jpg", ".jpeg", ".png",
-            ".bmp", ".tif", ".tiff"
-        }
-
-        self.image_paths = [
-            path for path in self.image_dir.rglob("*")
-            if path.suffix.lower() in valid_extensions
-        ]
-
-        if not self.image_paths:
-            raise RuntimeError(
-                f"No images found in {self.image_dir}"
-            )
+    def __init__(self, image_dir, img_size, *, image_paths=None):
+        self.image_paths = training_image_paths(image_dir) if image_paths is None else image_paths
 
         self.transform = transforms.Compose([
             transforms.Resize((img_size, img_size)),
@@ -79,45 +61,22 @@ class GoodConeDataset(Dataset):
 
     def __getitem__(self, index):
 
-        image_path = self.image_paths[index]
-
-        # PIL RGB
-        image = Image.open(image_path).convert("RGB")
-
-        # Convert RGB to OpenCV BGR
-        image_bgr = cv2.cvtColor(
-            np.array(image),
-            cv2.COLOR_RGB2BGR
-        )
-
-        # Separate thread body and tip
-        thread, tip = split_thread_tip(image_bgr)
-
-        # Convert thread BGR to RGB for PyTorch
-        thread_rgb = cv2.cvtColor(
-            thread,
-            cv2.COLOR_BGR2RGB
-        )
-
-        image = Image.fromarray(thread_rgb)
-
-        image = self.transform(image)
-
-        return image
+        return self.transform(load_thread_image(self.image_paths[index]))
 
 
 # ================= TRAINING =================
 
-def train_knn(GOOD_IMAGE_DIR,OUTPUT_PATH,USE_CPU=False,IMG_SIZE=224,BATCH_SIZE=8,K_NEIGHBORS=5):
+def train_knn(
+    GOOD_IMAGE_DIR, OUTPUT_PATH, USE_CPU=False, IMG_SIZE=224,
+    BATCH_SIZE=8, K_NEIGHBORS=5, *, dataset=None, on_progress=None, feature_model=None
+):
 
     USE_CUDA = not USE_CPU and torch.cuda.is_available()
     DEVICE = torch.device("cuda" if USE_CUDA else "cpu")
     print("Loading GOOD cone dataset...")
 
-    dataset = GoodConeDataset(
-        GOOD_IMAGE_DIR,
-        IMG_SIZE
-    )
+    if dataset is None:
+        dataset = GoodConeDataset(GOOD_IMAGE_DIR, IMG_SIZE)
 
     print("Total GOOD images:", len(dataset))
 
@@ -129,9 +88,10 @@ def train_knn(GOOD_IMAGE_DIR,OUTPUT_PATH,USE_CPU=False,IMG_SIZE=224,BATCH_SIZE=8
         pin_memory=USE_CUDA
     )
 
-    print("Loading EfficientNet-B7...")
-
-    model = EffB7_Feature().to(DEVICE)
+    if feature_model is None:
+        print("Loading EfficientNet-B7...")
+        feature_model = EffB7_Feature()
+    model = feature_model.to(DEVICE)
 
     if USE_CUDA:
         model = model.to(
@@ -141,6 +101,7 @@ def train_knn(GOOD_IMAGE_DIR,OUTPUT_PATH,USE_CPU=False,IMG_SIZE=224,BATCH_SIZE=8
     model.eval()
 
     all_embeddings = []
+    completed = 0
 
     print("Extracting features...")
 
@@ -159,6 +120,9 @@ def train_knn(GOOD_IMAGE_DIR,OUTPUT_PATH,USE_CPU=False,IMG_SIZE=224,BATCH_SIZE=8
             embeddings = embeddings.float().cpu().numpy()
 
             all_embeddings.append(embeddings)
+            completed += len(embeddings)
+            if on_progress is not None:
+                on_progress(completed)
 
     embeddings = np.concatenate(
         all_embeddings,

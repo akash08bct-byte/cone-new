@@ -1,6 +1,7 @@
 import json
+import sys
 from pathlib import Path
-from PyQt5.QtCore import QObject, pyqtSlot, pyqtSignal, QThread, QTimer, QUrl
+from PyQt5.QtCore import QObject, pyqtSlot, pyqtSignal, QThread, QTimer, QUrl, QProcess
 import time
 import threading
 import cv2
@@ -9,7 +10,7 @@ import base64
 from classes.Plc_connection import machine_status, uv_light_signal, white_light_signal, uv_light_result, white_light_result
 # Project Imports
 from paths import (
-    TRAINING_PAGE , CONTROLLER_PAGE, INDEX_PAGE, SETTINGS_PAGE, SETTINGS_JSON, TRAINING_IMG, MODELS_DIR
+    APP_DIR, TRAINING_PAGE , CONTROLLER_PAGE, INDEX_PAGE, SETTINGS_PAGE, SETTINGS_JSON, TRAINING_IMG, MODELS_DIR
 )
 
 
@@ -139,6 +140,7 @@ class CameraGrabWorker(QObject):
 # ================= BRIDGE CLASS =================
 class Bridge(QObject):
     frame_signal = pyqtSignal(str)  # Base64 JPEG string
+    model_training_status = pyqtSignal(str)
 
     def __init__(self, main_window, settings):
         super().__init__()
@@ -161,6 +163,7 @@ class Bridge(QObject):
         self.session_white_count = 0
         self.session_uv_count = 0
         self.job_id = None
+        self.model_training_process = None
 
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.connection_check)
@@ -485,71 +488,65 @@ class Bridge(QObject):
     
     @pyqtSlot(str, result=str)
     def startModelTraining(self, jobid):
+        if self.model_training_process is not None:
+            return j({"ok": False, "message": "Model training is already running."})
 
         try:
-            print("Training Job ID:", jobid)
+            job = self._saved_training_job(jobid)
+        except (OSError, ValueError, RuntimeError) as exc:
+            return j({"ok": False, "message": str(exc)})
 
-            from classes.train import train_knn
+        process = QProcess(self)
+        self.model_training_process = process
+        self.model_training_job = jobid
+        self.model_training_result = {}
+        process.setProcessChannelMode(QProcess.ForwardedErrorChannel)
+        process.readyReadStandardOutput.connect(self._read_model_training)
+        process.finished.connect(self._finish_model_training)
+        process.errorOccurred.connect(self._model_training_process_error)
+        args = [] if getattr(sys, "frozen", False) else [str(APP_DIR / "app.py")]
+        process.start(sys.executable, [
+            *args, "--train-models", str(job), str(MODELS_DIR / job.name)
+        ])
+        return j({"ok": True})
 
-            # ================= TOP WHITE =================
+    def _read_model_training(self):
+        process = self.model_training_process
+        while process.canReadLine():
+            line = bytes(process.readLine())
+            try:
+                update = json.loads(line)
+            except (UnicodeError, ValueError):
+                continue
+            self.model_training_result = update
+            if update["stage"] == "running":
+                self.model_training_status.emit(j({
+                    **update, "job_id": self.model_training_job
+                }))
 
-            top_white_train = TRAINING_IMG / jobid / "top_white"
-            top_white_out = MODELS_DIR / jobid / "top_white.joblib"
+    def _model_training_process_error(self, error):
+        if error == QProcess.FailedToStart:
+            self._finish_model_training(-1, QProcess.CrashExit)
 
-            if not top_white_train.exists():
-                return j({
-                    "ok": False,
-                    "stage": "failed",
-                    "message": f"Top White training folder not found: {top_white_train}"
-                })
-
-            print("Training TOP WHITE model...")
-
-            train_knn(
-                top_white_train,
-                top_white_out
-            )
-
-            print("TOP WHITE training completed")
-
-            # ================= TOP UV =================
-
-            top_uv_train = TRAINING_IMG / jobid / "top_uv"
-            top_uv_out = MODELS_DIR / jobid / "top_uv.joblib"
-
-            if not top_uv_train.exists():
-                return j({
-                    "ok": False,
-                    "stage": "failed",
-                    "message": f"Top UV training folder not found: {top_uv_train}"
-                })
-
-            print("Training TOP UV model...")
-
-            train_knn(
-                top_uv_train,
-                top_uv_out
-            )
-
-            print("TOP UV training completed")
-
-            # ================= SUCCESS =================
-
-            return j({
-                "ok": True,
-                "stage": "completed",
-                "message": "Both Top White and Top UV models trained successfully.",
-                "job_id": jobid
-            })
-
-        except Exception as e:
-
-            return j({
-                "ok": False,
+    def _finish_model_training(self, exit_code, exit_status):
+        process = self.model_training_process
+        self._read_model_training()
+        result = self.model_training_result
+        if result.get("stage") != "failed" and (
+            exit_status != QProcess.NormalExit
+            or exit_code != 0
+            or result.get("stage") != "completed"
+        ):
+            result = {
+                **result,
                 "stage": "failed",
-                "message": str(e),
-                "job_id": jobid
-            })
+                "message": f"Training process stopped ({exit_code}). {process.errorString()}",
+            }
+        self.model_training_process = None
+        process.deleteLater()
+        self.model_training_status.emit(j({
+            **result, "job_id": self.model_training_job
+        }))
 
 
     def _new_camera_instance(self):
