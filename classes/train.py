@@ -81,7 +81,25 @@ class GoodConeDataset(Dataset):
 
         image_path = self.image_paths[index]
 
+        # PIL RGB
         image = Image.open(image_path).convert("RGB")
+
+        # Convert RGB to OpenCV BGR
+        image_bgr = cv2.cvtColor(
+            np.array(image),
+            cv2.COLOR_RGB2BGR
+        )
+
+        # Separate thread body and tip
+        thread, tip = split_thread_tip(image_bgr)
+
+        # Convert thread BGR to RGB for PyTorch
+        thread_rgb = cv2.cvtColor(
+            thread,
+            cv2.COLOR_BGR2RGB
+        )
+
+        image = Image.fromarray(thread_rgb)
 
         image = self.transform(image)
 
@@ -210,10 +228,7 @@ def train_knn(GOOD_IMAGE_DIR,OUTPUT_PATH,USE_CPU=False,IMG_SIZE=224,BATCH_SIZE=8
 
 
 if __name__ == "__main__":
-    GOOD_IMAGE_DIR = Path("D:\cone_images\yarn")
-    OUTPUT_PATH = Path("models/b7_knn_artifact.joblib")
+    GOOD_IMAGE_DIR = Path("ConeI_Data/training_images/gg_hh_jj/top_uv")
+    OUTPUT_PATH = Path("ConeI_Data/models/b7_knn_artifact.joblib")
 
-    IMG_SIZE = 224
-    BATCH_SIZE = 8
-    K_NEIGHBORS = 5
     train_knn(GOOD_IMAGE_DIR,OUTPUT_PATH)

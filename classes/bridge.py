@@ -9,7 +9,7 @@ import base64
 from classes.Plc_connection import machine_status, uv_light_signal, white_light_signal, uv_light_result, white_light_result
 # Project Imports
 from paths import (
-    TRAINING_PAGE , CONTROLLER_PAGE, INDEX_PAGE, SETTINGS_PAGE, SETTINGS_JSON, TRAINING_IMG
+    TRAINING_PAGE , CONTROLLER_PAGE, INDEX_PAGE, SETTINGS_PAGE, SETTINGS_JSON, TRAINING_IMG, MODELS_DIR
 )
 
 
@@ -69,7 +69,8 @@ class CameraGrabWorker(QObject):
 
                 try:
                     frame = self._cam.capture_raw_image()
-
+                    # image = cv2.imread("LUCID_TRI122S-C_263900056__20261128121401111_image0.jpg")
+                    # frame = image.copy()
                     if frame is None:
                         QThread.msleep(5)
                         continue
@@ -481,6 +482,75 @@ class Bridge(QObject):
                 "message": str(e)
             })
 
+    
+    @pyqtSlot(str, result=str)
+    def startModelTraining(self, jobid):
+
+        try:
+            print("Training Job ID:", jobid)
+
+            from classes.train import train_knn
+
+            # ================= TOP WHITE =================
+
+            top_white_train = TRAINING_IMG / jobid / "top_white"
+            top_white_out = MODELS_DIR / jobid / "top_white.joblib"
+
+            if not top_white_train.exists():
+                return j({
+                    "ok": False,
+                    "stage": "failed",
+                    "message": f"Top White training folder not found: {top_white_train}"
+                })
+
+            print("Training TOP WHITE model...")
+
+            train_knn(
+                top_white_train,
+                top_white_out
+            )
+
+            print("TOP WHITE training completed")
+
+            # ================= TOP UV =================
+
+            top_uv_train = TRAINING_IMG / jobid / "top_uv"
+            top_uv_out = MODELS_DIR / jobid / "top_uv.joblib"
+
+            if not top_uv_train.exists():
+                return j({
+                    "ok": False,
+                    "stage": "failed",
+                    "message": f"Top UV training folder not found: {top_uv_train}"
+                })
+
+            print("Training TOP UV model...")
+
+            train_knn(
+                top_uv_train,
+                top_uv_out
+            )
+
+            print("TOP UV training completed")
+
+            # ================= SUCCESS =================
+
+            return j({
+                "ok": True,
+                "stage": "completed",
+                "message": "Both Top White and Top UV models trained successfully.",
+                "job_id": jobid
+            })
+
+        except Exception as e:
+
+            return j({
+                "ok": False,
+                "stage": "failed",
+                "message": str(e),
+                "job_id": jobid
+            })
+
 
     def _new_camera_instance(self):
         """
@@ -500,7 +570,7 @@ class Bridge(QObject):
                 return HikRobotCamera()
 
             elif camera_name == "webcam":
-                idx = int(self.settings.get("camera_index", 1))
+                idx = int(self.settings.get("camera_index", 0))
                 return Webcam(index=idx)
 
             else:
@@ -548,7 +618,7 @@ class Bridge(QObject):
 
         # Fallback webcam
         try:
-            idx = self.settings.get("camera_index", 1)
+            idx = self.settings.get("camera_index", 0)
             cam = Webcam(index=int(idx))
             ok = cam.open()
             print(f"⚠️ Worker: Webcam.open({idx}) = {ok}")
