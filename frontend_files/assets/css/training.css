@@ -32,28 +32,19 @@
   box-shadow: 0 8px 18px rgba(18, 25, 38, 0.12);
 }
 
-.camera-viewport {
+#cameraFeed {
   position: absolute;
   inset: 0;
-  overflow: hidden;
-}
-
-.preview-stage.active .camera-viewport {
-  top: 44px;
-}
- 
-.camera-viewport img {
-  position: relative;
-  /* inset: 5%; */
   display: block;
-  /* width: 90%;
-  height: 90%; */
-  object-fit: contain;
-  object-position: center;
+  width: 100%;
+  height: 100%;
+  max-width: none;
+  max-height: none;
+  object-fit: fill;
 }
 
-.preview-stage img:not([src]),
-.preview-stage img[src=""] {
+#cameraFeed:not([src]),
+#cameraFeed[src=""] {
   display: none;
 }
 
